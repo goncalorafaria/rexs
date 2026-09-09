@@ -22,6 +22,7 @@ class SlurmProfile:
     qos: str | None = None
     time_limit: str = "24:00:00"
     cpus_per_task: int = 4
+    tasks_per_node: int = 1
     memory: str | None = None
     apptainer_binary: str = "apptainer"
     image_cache: str = ".rexs/images"
@@ -33,6 +34,7 @@ class SlurmProfile:
     sbatch: Mapping[str, str | int | bool | None] = field(default_factory=dict)
     images: Mapping[str, str] = field(default_factory=dict)
     datasets: Mapping[str, str] = field(default_factory=dict)
+    bundled_datasets: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> SlurmProfile:
@@ -43,11 +45,19 @@ class SlurmProfile:
             raise ConfigurationError(f"unknown profile fields: {', '.join(unknown)}")
         if "setup_commands" in raw:
             raw["setup_commands"] = tuple(raw["setup_commands"] or ())
+        if "bundled_datasets" in raw:
+            if not isinstance(raw["bundled_datasets"], list) or not all(
+                isinstance(item, str) for item in raw["bundled_datasets"]
+            ):
+                raise ConfigurationError("bundled_datasets must be a list of dataset references")
+            raw["bundled_datasets"] = tuple(raw["bundled_datasets"])
         if isinstance(raw.get("time_limit"), int):
             raw["time_limit"] = _seconds_as_slurm_time(raw["time_limit"])
         profile = cls(**raw)
         if profile.cpus_per_task < 1:
             raise ConfigurationError("profile.cpus_per_task must be positive")
+        if isinstance(profile.tasks_per_node, bool) or not isinstance(profile.tasks_per_node, int) or profile.tasks_per_node < 1:
+            raise ConfigurationError("profile.tasks_per_node must be a positive integer")
         return profile
 
 

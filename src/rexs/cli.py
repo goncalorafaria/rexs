@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -166,13 +167,30 @@ class Rexs:
         limit: int = 100,
         refresh: bool = True,
         db: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """List tracked experiments, optionally refreshing active jobs first."""
+        details: bool = False,
+        ids_only: bool = False,
+    ) -> str | list[dict[str, Any]]:
+        """List ID, status and name. Use --details for JSON or --ids-only for IDs."""
 
         controller = Controller(db)
         if refresh:
             controller.refresh()
-        return [item.as_dict() for item in controller.store.list(status=status, limit=limit)]
+        records = controller.store.list(status=status, limit=limit)
+        if ids_only:
+            return "\n".join(item.job_id or item.id for item in records)
+        if details:
+            return [item.as_dict() for item in records]
+        if not records:
+            return "No experiments found."
+        rows = [("ID", "STATUS", "NAME")]
+        rows.extend(
+            (item.job_id or item.id, item.status, " ".join(item.name.split())[:60])
+            for item in records
+        )
+        id_width = max(len(row[0]) for row in rows)
+        status_width = max(len(row[1]) for row in rows)
+        return "\n".join(f"{identifier:<{id_width}}  {state:<{status_width}}  {name}"
+                         for identifier, state, name in rows)
 
     def show(self, identifier: str, refresh: bool = True, db: str | None = None) -> dict[str, Any]:
         """Show one experiment by REXS ID or Slurm job ID."""
@@ -246,7 +264,8 @@ class Rexs:
 
 def main(argv: Sequence[str] | None = None) -> None:
     try:
-        fire.Fire(Rexs(), command=list(argv) if argv is not None else None)
+        fire.Fire(Rexs(), command=list(argv) if argv is not None else None,
+                  serialize=lambda value: json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value))
     except (RexsError, KeyError, ValueError, OSError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None

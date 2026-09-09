@@ -119,7 +119,9 @@ def compile_experiment(
     task_names = [task.name for task in plans]
     if len(set(task_names)) != len(task_names):
         raise TranslationError("task names must be unique within an experiment")
-    nodes = sum(task.replicas for task in plans)
+    replicas = [task for task in plans for _ in range(task.replicas)]
+    task_count = len(replicas)
+    nodes = math.ceil(task_count / profile.tasks_per_node)
     gpus = max(task.gpu_count for task in plans)
     if gpus and any(task.gpu_count < gpus for task in plans):
         warnings.append(
@@ -127,10 +129,24 @@ def compile_experiment(
         )
     cpus = max(task.cpu_count for task in plans)
     memory = _largest_memory(plans, warnings) or profile.memory
+    if profile.tasks_per_node > 1:
+        if gpus:
+            raise TranslationError("task packing currently supports CPU-only tasks")
+        if any(task.memory is None for task in plans):
+            raise TranslationError("packed tasks require explicit resources.memory for concurrent Slurm steps")
+        try:
+            packed_memory = max(
+                sum(_memory_mib(task.memory) for task in replicas[start:start + profile.tasks_per_node])
+                for start in range(0, task_count, profile.tasks_per_node)
+            )
+            memory = _slurm_memory(str(max(packed_memory, _memory_mib(profile.memory or "0M"))))
+        except ValueError as exc:
+            raise TranslationError("packed tasks require valid task and profile memory sizes") from exc
     safe_job_name = _safe(job_name)[:128] or "beaker-experiment"
     lines = _headers(
         safe_job_name,
         nodes=nodes,
+        tasks=task_count,
         gpus=gpus,
         cpus=cpus,
         memory=memory,
@@ -158,7 +174,7 @@ def compile_experiment(
         warnings=tuple(warnings),
         job_name=safe_job_name,
         nodes=nodes,
-        tasks=nodes,
+        tasks=task_count,
         gpus_per_node=gpus,
     )
 
@@ -323,6 +339,8 @@ def _parse_datasets(
         _warn_unknown(source, {"weka", "hostPath", "beaker"}, f"{label}.source", warnings)
         kind, reference = known[0]
         key = f"{kind}:{reference}"
+        if kind != "hostPath" and key in profile.bundled_datasets:
+            continue
         host_path = dataset_map.get(key) or dataset_map.get(reference)
         if host_path is None and kind == "hostPath":
             host_path = reference
@@ -340,6 +358,7 @@ def _headers(
     name: str,
     *,
     nodes: int,
+    tasks: int,
     gpus: int,
     cpus: int,
     memory: str | None,
@@ -352,10 +371,12 @@ def _headers(
         ("job-name", name),
         ("output", "slurm-%x-%j.out"),
         ("nodes", nodes),
-        ("ntasks", nodes),
+        ("ntasks", tasks),
         ("cpus-per-task", cpus),
         ("time", profile.time_limit),
     ]
+    if profile.tasks_per_node > 1:
+        directives.append(("ntasks-per-node", profile.tasks_per_node))
     if gpus:
         directives.append(("gpus-per-node", gpus))
     directives.extend((("mem", memory), ("partition", partition), ("account", account), ("qos", qos)))
@@ -450,7 +471,7 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
     node_index = 0
     for task in plans:
         image_index = image_indexes.setdefault(task.image, len(image_indexes))
-        leader_index = node_index
+        leader_index = node_index // profile.tasks_per_node
         for rank in range(task.replicas):
             function = f"launch_{_safe(task.name).replace('.', '_').replace('-', '_')}_{rank}"
             result_dir = f"$REXS_RUN_DIR/results/{_safe(task.name)}/{rank}"
@@ -458,7 +479,7 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
             lines.extend(
                 [
                     f"{function}() {{",
-                    f'  local node="${{REXS_NODES[{node_index}]}}"',
+                    f'  local node="${{REXS_NODES[{node_index // profile.tasks_per_node}]}}"',
                     "  (",
                     f"    export APPTAINERENV_BEAKER_REPLICA_RANK={rank}",
                     f"    export APPTAINERENV_BEAKER_REPLICA_COUNT={task.replicas}",
@@ -508,6 +529,10 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
             ]
             if task.gpu_count:
                 srun_args.append(f"--gpus-per-task={task.gpu_count}")
+            elif profile.tasks_per_node > 1:
+                # A site may reserve a GPU in SBATCH for CPU-only services.
+                # Do not let concurrent steps inherit that exclusive GRES.
+                srun_args.append("--gres=none")
             if task.memory:
                 srun_args.append(f"--mem={_slurm_memory(task.memory)}")
             command = _shell_array(task.command)

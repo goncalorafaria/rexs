@@ -218,3 +218,46 @@ def _assert_bash_valid(script: str, tmp_path: Path) -> None:
     target = tmp_path / "job.sbatch"
     target.write_text(script, encoding="utf-8")
     subprocess.run(["bash", "-n", str(target)], check=True)
+
+
+def test_cpu_packing_places_replicas_and_sums_memory(tmp_path: Path) -> None:
+    profile = SlurmProfile.from_mapping({
+        'tasks_per_node': 2, 'cpus_per_task': 2, 'memory': '4G',
+        'images': {'runtime': '/images/runtime.sif'}, 'sbatch': {'gpus-per-node': 1},
+    })
+    spec = {'version': 'v2', 'tasks': [
+        {'name': 'redis', 'image': {'beaker': 'runtime'}, 'command': ['true'],
+         'resources': {'memory': '2G'}},
+        {'name': 'podman', 'replicas': 3, 'image': {'beaker': 'runtime'}, 'command': ['true'],
+         'resources': {'memory': '6G'}},
+    ]}
+    result = compile_experiment(spec, profile=profile)
+    assert (result.nodes, result.tasks) == (2, 4)
+    assert '#SBATCH --ntasks=4\n' in result.script
+    assert '#SBATCH --ntasks-per-node=2\n' in result.script
+    assert '#SBATCH --mem=12G\n' in result.script
+    assert result.script.count('local node="${REXS_NODES[0]}"') == 2
+    assert result.script.count('local node="${REXS_NODES[1]}"') == 2
+    assert result.script.count('BEAKER_LEADER_REPLICA_HOSTNAME="${REXS_NODES[0]}"') == 4
+    assert result.script.count('--gres=none') == 4
+    assert result.script.count('--mem=6G') == 3
+    _assert_bash_valid(result.script, tmp_path)
+
+
+@pytest.mark.parametrize('resources', [{}, {'gpuCount': 1, 'memory': '2G'}])
+def test_packing_rejects_ambiguous_step_resources(resources) -> None:
+    profile = SlurmProfile.from_mapping({'tasks_per_node': 2})
+    spec = {'version': 'v2', 'tasks': [
+        {'image': {'docker': 'ubuntu'}, 'command': ['true'], 'resources': resources},
+    ]}
+    with pytest.raises(TranslationError):
+        compile_experiment(spec, profile=profile)
+
+
+def test_bundled_dataset_does_not_mask_image_contents():
+    profile = SlurmProfile(images={'runtime': '/images/runtime.sif'}, bundled_datasets=('weka:fixtures',))
+    spec = {'version': 'v2', 'tasks': [{'name': 'sft', 'image': {'beaker': 'runtime'},
+        'command': ['true'], 'datasets': [{'mountPath': '/data', 'source': {'weka': 'fixtures'}}]}]}
+    result = compile_experiment(spec, profile=profile)
+    assert '--bind' not in result.script
+    assert not result.warnings
