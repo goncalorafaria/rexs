@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">REXS</title>
+  <desc id="desc">Three connected compute nodes forming the letter R</desc>
+  <defs>
+    <linearGradient id="g" x1="16" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8bd5ff"/>
+      <stop offset="1" stop-color="#7ee787"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#0b1020"/>
+  <path d="M35 101V27h34c20 0 31 10 31 25 0 12-7 20-18 23l21 26H81L63 78h-9v23H35Zm19-40h14c9 0 14-3 14-9s-5-9-14-9H54v18Z" fill="url(#g)"/>
+  <circle cx="36" cy="27" r="6" fill="#8bd5ff"/>
+  <circle cx="100" cy="52" r="6" fill="#7ee787"/>
+  <circle cx="103" cy="101" r="6" fill="#8bd5ff"/>
+</svg>

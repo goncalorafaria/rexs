@@ -1,0 +1,43 @@
+version: v2
+description: Representative host-networked LiteRegistry deployment
+budget: ai2/oe-omai
+tasks:
+  - name: redis
+    image: {beaker: goncalof/literegistry-basic}
+    command: [bash, -lc, "exec literegistry redis --runtime=local --foreground --port 6379 --log /weka/registry.txt"]
+    hostNetworking: true
+    datasets:
+      - mountPath: /weka
+        source: {weka: oe-adapt-default}
+    result: {path: /tmp/result}
+    resources: {gpuCount: 0, cpuCount: 2}
+    constraints: {cluster: [ai2/holmes]}
+
+  - name: terminal
+    replicas: 2
+    image: {beaker: goncalof/literegistry-terminal-1-0-27-pandoc3}
+    command:
+      - bash
+      - -lc
+      - 'exec literegistry terminal --port "$((1213 + ${BEAKER_REPLICA_RANK:-0}))" --registry-file /weka/registry.txt'
+    hostNetworking: true
+    datasets:
+      - mountPath: /weka
+        source: {weka: oe-adapt-default}
+    result: {path: /tmp/result}
+    resources: {gpuCount: 0, cpuCount: 4}
+    constraints: {cluster: [ai2/holmes]}
+
+  - name: vllm
+    image: {beaker: goncalof/literegistry-vllm}
+    envVars:
+      - {name: HF_TOKEN, secret: HF_TOKEN}
+    command: [bash, -lc, "exec literegistry vllm --runtime local --model Qwen/Qwen3.5-9B --registry-file /weka/registry.txt"]
+    hostNetworking: true
+    resources: {gpuCount: 1, cpuCount: 8, memory: 64 GiB}
+    datasets:
+      - mountPath: /weka
+        source: {weka: oe-adapt-default}
+    result: {path: /tmp/result}
+    context: {priority: high}
+    constraints: {cluster: [ai2/holmes]}

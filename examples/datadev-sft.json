@@ -1,0 +1,24 @@
+{
+  "version": "v2",
+  "description": "Representative datadev SFT experiment",
+  "budget": "ai2/oe-omai",
+  "tasks": [
+    {
+      "name": "sft",
+      "image": {"beaker": "goncalof/datadev-runtime"},
+      "command": ["bash", "-c", "set -euo pipefail\ncd /weka/gfaria/jtc\nexec sft @ /weka/gfaria/jtc/configs/example.toml"],
+      "envVars": [
+        {"name": "HOME", "value": "/weka/gfaria"},
+        {"name": "WANDB_API_KEY", "secret": "gfaria_WANDB_API_KEY"},
+        {"name": "HF_TOKEN", "secret": "HF_TOKEN"}
+      ],
+      "datasets": [
+        {"mountPath": "/weka", "source": {"weka": "oe-adapt-default"}}
+      ],
+      "result": {"path": "/tmp/beaker-result"},
+      "resources": {"gpuCount": 4, "cpuCount": 16, "memory": "128 GiB"},
+      "context": {"priority": "high", "minRuntime": "0h", "autoResume": true},
+      "constraints": {"cluster": ["ai2/holmes"]}
+    }
+  ]
+}

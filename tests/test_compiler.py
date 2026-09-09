@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from rexs.cli import _check_and_report
+from rexs.compiler import compile_experiment
+from rexs.config import SlurmProfile, load_experiment
+from rexs.errors import RexsError, TranslationError
+
+PROFILE = SlurmProfile.from_mapping(
+    {
+        "account": "research",
+        "partition": "default-gpu",
+        "qos": "normal",
+        "time_limit": "12:00:00",
+        "cpus_per_task": 2,
+        "images": {
+            "runtime": "/images/runtime.sif",
+            "redis": "/images/redis.sif",
+            "terminal": "/images/terminal.sif",
+            "vllm": "docker://example/vllm:latest",
+        },
+        "datasets": {"weka:oe-adapt-default": "/weka"},
+    }
+)
+
+
+def test_datadev_single_task_translation_is_shell_valid(tmp_path: Path) -> None:
+    spec = {
+        "version": "v2",
+        "workspace": "ai2/datadev",
+        "budget": "ai2/oe-omai",
+        "tasks": [
+            {
+                "name": "sft",
+                "image": {"beaker": "runtime"},
+                "command": ["bash", "-c", "set -euo pipefail\nexec sft @ /weka/run.toml"],
+                "envVars": [
+                    {"name": "HOME", "value": "/weka/gfaria"},
+                    {"name": "WANDB_API_KEY", "secret": "gfaria_WANDB_API_KEY"},
+                ],
+                "datasets": [{"mountPath": "/weka", "source": {"weka": "oe-adapt-default"}}],
+                "result": {"path": "/tmp/beaker-result"},
+                "resources": {"gpuCount": 4, "cpuCount": 16, "memory": "128 GiB"},
+                "context": {"priority": "high", "minRuntime": "0h", "autoResume": True},
+                "constraints": {"cluster": ["ai2/holmes"]},
+            }
+        ],
+    }
+
+    result = compile_experiment(spec, profile=PROFILE, job_name="sft run")
+
+    assert "#SBATCH --job-name=sft__run" in result.script
+    assert "#SBATCH --nodes=1" in result.script
+    assert "#SBATCH --gpus-per-node=4" in result.script
+    assert "#SBATCH --partition=default-gpu" in result.script
+    assert "#SBATCH --account=research" in result.script
+    assert "#SBATCH --qos=normal" in result.script
+    assert any("experiment.workspace" in warning for warning in result.warnings)
+    assert any("experiment.budget" in warning for warning in result.warnings)
+    assert any("constraints" in warning for warning in result.warnings)
+    assert any("context" in warning for warning in result.warnings)
+    assert 'export APPTAINERENV_WANDB_API_KEY="${gfaria_WANDB_API_KEY}"' in result.script
+    assert "--bind /weka:/weka" in result.script
+    assert '--bind "$REXS_RUN_DIR/results/sft/0:/tmp/beaker-result"' in result.script
+    _assert_bash_valid(result.script, tmp_path)
+
+
+def test_literegistry_replicas_share_one_allocation(tmp_path: Path) -> None:
+    spec = {
+        "version": "v2",
+        "tasks": [
+            {
+                "name": "redis",
+                "image": {"beaker": "redis"},
+                "command": ["redis-server"],
+                "hostNetworking": True,
+                "resources": {"cpuCount": 2},
+                "constraints": {"cluster": ["ai2/holmes"]},
+            },
+            {
+                "name": "terminal",
+                "replicas": 2,
+                "leaderSelection": True,
+                "image": {"beaker": "terminal"},
+                "command": ["bash", "-lc", 'terminal --rank "${BEAKER_REPLICA_RANK:-0}"'],
+                "constraints": {"cluster": ["ai2/holmes"]},
+            },
+            {
+                "name": "vllm",
+                "image": {"beaker": "vllm"},
+                "command": ["vllm", "serve", "model"],
+                "resources": {"gpuCount": 1, "memory": "64 GiB"},
+                "constraints": {"cluster": ["ai2/holmes"]},
+            },
+        ],
+    }
+    result = compile_experiment(spec, profile=PROFILE, job_name="registry")
+
+    assert result.nodes == 4
+    assert "#SBATCH --nodes=4" in result.script
+    assert "#SBATCH --ntasks=4" in result.script
+    assert "#SBATCH --gpus-per-node=1" in result.script
+    assert "APPTAINERENV_BEAKER_REPLICA_RANK=1" in result.script
+    assert "${BEAKER_REPLICA_RANK:-0}" in result.script
+    assert 'APPTAINERENV_BEAKER_NODE_HOSTNAME="$node"' in result.script
+    assert 'APPTAINERENV_BEAKER_JOB_ID="${SLURM_JOB_ID:-manual}"' in result.script
+    assert result.script.count('REXS_PIDS+=("$!")') == 4
+    _assert_bash_valid(result.script, tmp_path)
+
+
+def test_unmapped_beaker_resources_use_predictable_paths() -> None:
+    spec = {
+        "version": "v2",
+        "unknownTopLevel": True,
+        "tasks": [
+            {
+                "name": "job",
+                "image": {"beaker": "owner/image"},
+                "command": ["true"],
+                "datasets": [{"mountPath": "/data", "source": {"beaker": "owner/data"}}],
+            }
+        ],
+    }
+    result = compile_experiment(spec, profile=PROFILE)
+    assert "/weka/gfaria/apptainer/images/owner__image.sif" in result.script
+    assert "/weka/gfaria/datasets/beaker/owner__data:/data" in result.script
+    assert any("unknownTopLevel" in warning for warning in result.warnings)
+    assert any("unmapped Beaker image" in warning for warning in result.warnings)
+
+
+def test_recognized_and_nested_unsupported_features_warn(capsys: pytest.CaptureFixture[str]) -> None:
+    spec = {
+        "version": "v2",
+        "retry": {},
+        "groups": [],
+        "tasks": [
+            {
+                "name": "job",
+                "image": {"docker": "busybox", "pullPolicy": "always"},
+                "command": ["true"],
+                "synchronizedStartTimeout": "5m",
+                "propagatePreemption": False,
+                "envVars": [{"name": "MODE", "value": "test", "description": "unsupported"}],
+                "datasets": [
+                    {
+                        "mountPath": "/data",
+                        "source": {"hostPath": "/tmp", "subPath": "nested"},
+                        "readOnly": True,
+                        "mountOptions": ["nodev"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = compile_experiment(spec, profile=PROFILE)
+
+    expected = (
+        "experiment.retry",
+        "experiment.groups",
+        "synchronizedStartTimeout",
+        "propagatePreemption",
+        "pullPolicy",
+        "description",
+        "mountOptions",
+        "subPath",
+    )
+    for feature in expected:
+        assert any(feature in warning for warning in result.warnings), feature
+
+    _check_and_report(result, strict=False)
+    assert "warning:" in capsys.readouterr().err
+    with pytest.raises(RexsError, match="strict translation refused warnings") as exc_info:
+        _check_and_report(result, strict=True)
+    assert "pullPolicy" in str(exc_info.value)
+
+
+def test_template_values_are_exact_and_shell_defaults_survive(tmp_path: Path) -> None:
+    source = tmp_path / "experiment.yaml"
+    source.write_text(
+        """\
+version: v2
+tasks:
+  - name: service
+    replicas: ${REPLICAS}
+    image: {docker: busybox:latest}
+    command: [bash, -lc, 'echo ${BEAKER_REPLICA_RANK:-0}']
+""",
+        encoding="utf-8",
+    )
+    spec = load_experiment(source, {"REPLICAS": "3"})
+    result = compile_experiment(spec, profile=PROFILE)
+    assert result.nodes == 3
+    assert "${BEAKER_REPLICA_RANK:-0}" in result.script
+
+
+def test_unresolved_integer_template_has_actionable_error() -> None:
+    spec = {
+        "version": "v2",
+        "tasks": [
+            {
+                "name": "x",
+                "replicas": "${COUNT}",
+                "image": {"docker": "busybox"},
+                "command": ["true"],
+            }
+        ],
+    }
+    with pytest.raises(TranslationError, match="--set KEY=VALUE"):
+        compile_experiment(spec, profile=PROFILE)
+
+
+def _assert_bash_valid(script: str, tmp_path: Path) -> None:
+    target = tmp_path / "job.sbatch"
+    target.write_text(script, encoding="utf-8")
+    subprocess.run(["bash", "-n", str(target)], check=True)

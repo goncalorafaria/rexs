@@ -1,0 +1,29 @@
+# Site policy stays here; the Beaker experiment remains unchanged.
+account: cse
+partition: ckpt-all
+qos: ckpt
+time_limit: "24:00:00"
+cpus_per_task: 8
+memory: 64G
+
+apptainer_binary: apptainer
+image_cache: /weka/gfaria/apptainer/cache
+image_dir: /weka/gfaria/apptainer/images
+dataset_root: /weka/gfaria/datasets
+run_root: /weka/gfaria/rexs-runs
+
+# Optional shell file containing Beaker secret names.
+secret_file: /weka/gfaria/.config/rexs/secrets.env
+
+setup_commands:
+  - module load apptainer
+
+images:
+  goncalof/datadev-runtime: /weka/gfaria/apptainer/images/datadev-runtime.sif
+  goncalof/literegistry-basic: /weka/gfaria/apptainer/images/literegistry-basic.sif
+  goncalof/literegistry-terminal-1-0-27-pandoc3: /weka/gfaria/apptainer/images/literegistry-terminal.sif
+  goncalof/literegistry-search-1-0-26: /weka/gfaria/apptainer/images/literegistry-search.sif
+  goncalof/literegistry-vllm: /weka/gfaria/apptainer/images/literegistry-vllm.sif
+
+datasets:
+  weka:oe-adapt-default: /weka
