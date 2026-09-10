@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/rexs-mark.svg" width="112" alt="REXS logo">
+  <img src="src/rexs/static/rexs-logo.png" width="160" alt="REXS green T-rex badge">
   <h1>REXS</h1>
   <p><strong>Reproducible Experiments, eXecuted on Slurm.</strong></p>
   <p>Run the Beaker experiment configurations you already have on Slurm and Apptainer.</p>
@@ -182,6 +182,27 @@ Runtime files are organized as:
 
 Slurm remains authoritative. The controller reconciles active records through
 `squeue` and completed records through `sacct`.
+
+## Optional W&B capture
+
+Install `pip install -e '.[wandb]'` to let the REXS server capture local W&B
+logs automatically. Every 30 seconds it scans registered jobs' output directories
+for `.wandb` files, including offline runs. No W&B login or upload is required.
+Jobs without W&B continue normally; this does not change their launch commands.
+
+Open a run and select **GPU metrics**, after **History**. Each GPU card plots utilization and allocated memory over time, with hover
+values and the latest sample. Long histories retain extrema when reduced for display.
+Samples remain available after the job finishes. Missing values display a dash;
+stale samples are marked. GPU indices are local to each logger, so separate
+sources may report the same physical devices.
+
+Scalar history, summary and system metrics, plus W&B console output records,
+are saved incrementally in the existing SQLite database (`wandb_sources`,
+`wandb_records`, and `wandb_gpu_latest`). Incomplete trailing records are retried
+on the next scan. Original files are read only. This is not a W&B artifact or
+media archive; capture requires the log files to remain accessible to the server.
+Set `REXS_CAPTURE_WANDB=0` before starting the server to disable collection
+without deleting saved samples. Source errors do not interrupt jobs.
 
 ## Documentation
 

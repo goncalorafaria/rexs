@@ -1,0 +1,79 @@
+version: v2
+description: 'Delta LiteRegistry: Redis, gateway, two mirrors and four Podman nodes'
+tasks:
+- name: redis
+  replicas: 1
+  image:
+    beaker: literegistry-redis
+  command:
+  - python
+  - /deployment/service.py
+  - redis
+  resources:
+    gpuCount: 0
+    cpuCount: 2
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: gateway
+  replicas: 1
+  image:
+    beaker: literegistry-gateway
+  command:
+  - python
+  - /deployment/service.py
+  - gateway
+  resources:
+    gpuCount: 0
+    cpuCount: 2
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: mirror
+  replicas: 2
+  image:
+    beaker: literegistry-mirror
+  command:
+  - python
+  - /deployment/service.py
+  - mirror
+  resources:
+    gpuCount: 0
+    cpuCount: 2
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: podman
+  replicas: 4
+  image:
+    beaker: literegistry-podman
+  command:
+  - python
+  - /deployment/service.py
+  - podman
+  resources:
+    gpuCount: 0
+    cpuCount: 2
+    memory: 8 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results

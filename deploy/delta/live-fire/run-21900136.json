@@ -1,0 +1,16 @@
+{
+  "job_id": "21900136",
+  "gateway": "http://gpub006:22721",
+  "command": [
+    "/u/galvesfaria/.local/share/venvs/main/bin/literegistry-podman-live-fire",
+    "--gateway_url=http://gpub006:22721",
+    "--manifest_path=/u/galvesfaria/rexs/deploy/delta/live-fire/smoke.jsonl",
+    "--total=4",
+    "--concurrency=2",
+    "--expected_podman=4",
+    "--wait_timeout=120",
+    "--command_timeout=20",
+    "--retries=1",
+    "--log_every=1"
+  ]
+}

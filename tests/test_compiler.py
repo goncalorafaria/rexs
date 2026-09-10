@@ -221,43 +221,137 @@ def _assert_bash_valid(script: str, tmp_path: Path) -> None:
 
 
 def test_cpu_packing_places_replicas_and_sums_memory(tmp_path: Path) -> None:
-    profile = SlurmProfile.from_mapping({
-        'tasks_per_node': 2, 'cpus_per_task': 2, 'memory': '4G',
-        'images': {'runtime': '/images/runtime.sif'}, 'sbatch': {'gpus-per-node': 1},
-    })
-    spec = {'version': 'v2', 'tasks': [
-        {'name': 'redis', 'image': {'beaker': 'runtime'}, 'command': ['true'],
-         'resources': {'memory': '2G'}},
-        {'name': 'podman', 'replicas': 3, 'image': {'beaker': 'runtime'}, 'command': ['true'],
-         'resources': {'memory': '6G'}},
-    ]}
+    profile = SlurmProfile.from_mapping(
+        {
+            "tasks_per_node": 2,
+            "cpus_per_task": 2,
+            "memory": "4G",
+            "images": {"runtime": "/images/runtime.sif"},
+            "sbatch": {"gpus-per-node": 1},
+        }
+    )
+    spec = {
+        "version": "v2",
+        "tasks": [
+            {"name": "redis", "image": {"beaker": "runtime"}, "command": ["true"], "resources": {"memory": "2G"}},
+            {
+                "name": "podman",
+                "replicas": 3,
+                "image": {"beaker": "runtime"},
+                "command": ["true"],
+                "resources": {"memory": "6G"},
+            },
+        ],
+    }
     result = compile_experiment(spec, profile=profile)
     assert (result.nodes, result.tasks) == (2, 4)
-    assert '#SBATCH --ntasks=4\n' in result.script
-    assert '#SBATCH --ntasks-per-node=2\n' in result.script
-    assert '#SBATCH --mem=12G\n' in result.script
+    assert "#SBATCH --ntasks=4\n" in result.script
+    assert "#SBATCH --ntasks-per-node=2\n" in result.script
+    assert "#SBATCH --mem=12G\n" in result.script
     assert result.script.count('local node="${REXS_NODES[0]}"') == 2
     assert result.script.count('local node="${REXS_NODES[1]}"') == 2
     assert result.script.count('BEAKER_LEADER_REPLICA_HOSTNAME="${REXS_NODES[0]}"') == 4
-    assert result.script.count('--gres=none') == 4
-    assert result.script.count('--mem=6G') == 3
+    assert result.script.count("--gres=none") == 4
+    assert result.script.count("--mem=6G") == 3
     _assert_bash_valid(result.script, tmp_path)
 
 
-@pytest.mark.parametrize('resources', [{}, {'gpuCount': 1, 'memory': '2G'}])
+@pytest.mark.parametrize("resources", [{}, {"gpuCount": 1, "memory": "2G"}])
 def test_packing_rejects_ambiguous_step_resources(resources) -> None:
-    profile = SlurmProfile.from_mapping({'tasks_per_node': 2})
-    spec = {'version': 'v2', 'tasks': [
-        {'image': {'docker': 'ubuntu'}, 'command': ['true'], 'resources': resources},
-    ]}
+    profile = SlurmProfile.from_mapping({"tasks_per_node": 2})
+    spec = {
+        "version": "v2",
+        "tasks": [
+            {"image": {"docker": "ubuntu"}, "command": ["true"], "resources": resources},
+        ],
+    }
     with pytest.raises(TranslationError):
         compile_experiment(spec, profile=profile)
 
 
 def test_bundled_dataset_does_not_mask_image_contents():
-    profile = SlurmProfile(images={'runtime': '/images/runtime.sif'}, bundled_datasets=('weka:fixtures',))
-    spec = {'version': 'v2', 'tasks': [{'name': 'sft', 'image': {'beaker': 'runtime'},
-        'command': ['true'], 'datasets': [{'mountPath': '/data', 'source': {'weka': 'fixtures'}}]}]}
+    profile = SlurmProfile(images={"runtime": "/images/runtime.sif"}, bundled_datasets=("weka:fixtures",))
+    spec = {
+        "version": "v2",
+        "tasks": [
+            {
+                "name": "sft",
+                "image": {"beaker": "runtime"},
+                "command": ["true"],
+                "datasets": [{"mountPath": "/data", "source": {"weka": "fixtures"}}],
+            }
+        ],
+    }
     result = compile_experiment(spec, profile=profile)
-    assert '--bind' not in result.script
+    assert "--bind" not in result.script
     assert not result.warnings
+
+
+def test_joint_gpu_cpu_replicas_share_one_allocation(tmp_path):
+    profile = SlurmProfile(tasks_per_node=9, completion_task="rl", images={"runtime": "/image.sif"})
+    tasks = [
+        {
+            "name": "podman",
+            "replicas": 4,
+            "image": {"beaker": "runtime"},
+            "command": ["sleep", "60"],
+            "resources": {"cpuCount": 2, "memory": "8G"},
+        },
+        {
+            "name": "mirror",
+            "replicas": 2,
+            "image": {"beaker": "runtime"},
+            "command": ["sleep", "60"],
+            "resources": {"cpuCount": 2, "memory": "4G"},
+        },
+        {
+            "name": "redis",
+            "image": {"beaker": "runtime"},
+            "command": ["sleep", "60"],
+            "resources": {"cpuCount": 2, "memory": "4G"},
+        },
+        {
+            "name": "gateway",
+            "image": {"beaker": "runtime"},
+            "command": ["sleep", "60"],
+            "resources": {"cpuCount": 2, "memory": "4G"},
+        },
+        {
+            "name": "rl",
+            "image": {"beaker": "runtime"},
+            "command": ["true"],
+            "resources": {"gpuCount": 8, "cpuCount": 64, "memory": "512G"},
+        },
+    ]
+    result = compile_experiment({"version": "v2", "tasks": tasks}, profile=profile)
+    assert result.nodes == 1 and result.tasks == 9 and not result.warnings
+    assert "#SBATCH --cpus-per-task=80" in result.script
+    assert "#SBATCH --gpus-per-node=8" in result.script
+    assert "#SBATCH --mem=560G" in result.script
+    assert result.script.count("--gres=none") == 8
+    assert result.script.count("--gpus-per-task=8") == 1
+    assert "REXS_NODES[1]" not in result.script
+    subprocess.run(["bash", "-n"], input=result.script, text=True, check=True)
+
+
+@pytest.mark.parametrize(
+    "primary,service,expected",
+    [
+        ("sleep .1; exit 0", "sleep 10", 0),
+        ("sleep .1; exit 7", "sleep 10", 7),
+        ("sleep 10", "sleep .1; exit 0", 1),
+    ],
+)
+def test_joint_lifecycle_ends_with_training_and_fails_on_service_exit(primary, service, expected):
+    from rexs.compiler import _supervisor
+
+    script = """set -euo pipefail
+cleanup() { for pid in "${REXS_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done; for pid in "${REXS_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done; }
+REXS_RUN_DIR=/tmp
+REXS_PIDS=()
+"""
+    script += f'( {primary} ) &\nREXS_COMPLETION_PID=$!\nREXS_PIDS+=("$!")\n'
+    script += f'( {service} ) &\nREXS_PIDS+=("$!")\n'
+    script += "\n".join(_supervisor("rl"))
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=5, check=False)
+    assert result.returncode == expected, result.stderr

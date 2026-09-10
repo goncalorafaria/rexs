@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Delta has no subordinate UID/GID mapping for this account. The root-mapped
+# user namespace gives nested Podman a consistent UID, with no host root access.
+if [[ ${1:-} == exec ]]; then
+    shift
+    runtime_dir=$(mktemp -d "${TMPDIR:-/tmp}/rexs-runtime.XXXXXXXX")
+    exec /usr/bin/apptainer exec --fakeroot --bind "$runtime_dir:/run" "$@"
+fi
+exec /usr/bin/apptainer "$@"

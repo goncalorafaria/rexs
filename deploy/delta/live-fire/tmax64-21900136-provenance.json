@@ -1,0 +1,10 @@
+{
+  "commit": "8450dd3",
+  "manifest_sha256": "6dd210e2e888b748ea9cbf6c1a7a371539282032cc6018826009eeabf70407bf",
+  "traces": 64,
+  "commands": 1246,
+  "unique_images": 64,
+  "concurrency": 4,
+  "shuffle_seed": 0,
+  "gateway": "http://gpub006:22721"
+}

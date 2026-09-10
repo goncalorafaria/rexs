@@ -123,30 +123,38 @@ def compile_experiment(
     task_count = len(replicas)
     nodes = math.ceil(task_count / profile.tasks_per_node)
     gpus = max(task.gpu_count for task in plans)
-    if gpus and any(task.gpu_count < gpus for task in plans):
+    if gpus and not profile.completion_task and any(task.gpu_count < gpus for task in plans):
         warnings.append(
             f"homogeneous allocation requests {gpus} GPU(s) on every node; CPU-only or smaller tasks leave some idle"
         )
     cpus = max(task.cpu_count for task in plans)
     memory = _largest_memory(plans, warnings) or profile.memory
     if profile.tasks_per_node > 1:
-        if gpus:
-            raise TranslationError("task packing currently supports CPU-only tasks")
+        if gpus and not profile.completion_task:
+            raise TranslationError("GPU task packing requires an explicit completion_task lifecycle")
         if any(task.memory is None for task in plans):
             raise TranslationError("packed tasks require explicit resources.memory for concurrent Slurm steps")
         try:
             packed_memory = max(
-                sum(_memory_mib(task.memory) for task in replicas[start:start + profile.tasks_per_node])
+                sum(_memory_mib(task.memory) for task in replicas[start : start + profile.tasks_per_node])
                 for start in range(0, task_count, profile.tasks_per_node)
             )
             memory = _slurm_memory(str(max(packed_memory, _memory_mib(profile.memory or "0M"))))
         except ValueError as exc:
             raise TranslationError("packed tasks require valid task and profile memory sizes") from exc
+    if profile.completion_task:
+        matching = [task for task in plans if task.name == profile.completion_task]
+        if nodes != 1 or len(matching) != 1 or matching[0].replicas != 1:
+            raise TranslationError("completion_task requires one matching replica and a single packed node")
+        if any(task.memory is None for task in plans):
+            raise TranslationError("completion_task requires explicit memory for each task")
+        cpus = sum(task.cpu_count for task in replicas)
+        gpus = sum(task.gpu_count for task in replicas)
     safe_job_name = _safe(job_name)[:128] or "beaker-experiment"
     lines = _headers(
         safe_job_name,
         nodes=nodes,
-        tasks=task_count,
+        tasks=1 if profile.completion_task else task_count,
         gpus=gpus,
         cpus=cpus,
         memory=memory,
@@ -168,7 +176,7 @@ def compile_experiment(
     lines.extend(_runtime_preamble(profile, nodes))
     lines.extend(_image_preamble(plans, profile))
     lines.extend(_task_launches(plans, profile))
-    lines.extend(_supervisor())
+    lines.extend(_supervisor(profile.completion_task))
     return CompileResult(
         script="\n".join(lines) + "\n",
         warnings=tuple(warnings),
@@ -375,7 +383,7 @@ def _headers(
         ("cpus-per-task", cpus),
         ("time", profile.time_limit),
     ]
-    if profile.tasks_per_node > 1:
+    if profile.tasks_per_node > 1 and not profile.completion_task:
         directives.append(("ntasks-per-node", profile.tasks_per_node))
     if gpus:
         directives.append(("gpus-per-node", gpus))
@@ -551,11 +559,28 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
                     "",
                 ]
             )
+            if task.name == profile.completion_task:
+                lines.append("REXS_COMPLETION_PID=${REXS_PIDS[-1]}")
             node_index += 1
     return lines
 
 
-def _supervisor() -> list[str]:
+def _supervisor(completion_task: str | None = None) -> list[str]:
+    if completion_task:
+        return [
+            'echo "launched ${#REXS_PIDS[@]} task replicas; logs: $REXS_RUN_DIR/logs"',
+            "set +e",
+            'wait -n -p finished_pid "${REXS_PIDS[@]}"',
+            "exit_code=$?",
+            "set -e",
+            'if [[ ${finished_pid:-} != "$REXS_COMPLETION_PID" ]]; then',
+            '  echo "service replica exited before training; stopping allocation" >&2',
+            "  (( exit_code != 0 )) || exit_code=1",
+            "fi",
+            "cleanup",
+            "trap - EXIT INT TERM",
+            'exit "$exit_code"',
+        ]
     return [
         'echo "launched ${#REXS_PIDS[@]} task replicas; logs: $REXS_RUN_DIR/logs"',
         "remaining=${#REXS_PIDS[@]}",

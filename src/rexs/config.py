@@ -23,6 +23,7 @@ class SlurmProfile:
     time_limit: str = "24:00:00"
     cpus_per_task: int = 4
     tasks_per_node: int = 1
+    completion_task: str | None = None
     memory: str | None = None
     apptainer_binary: str = "apptainer"
     image_cache: str = ".rexs/images"

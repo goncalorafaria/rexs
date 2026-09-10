@@ -1,0 +1,20 @@
+# CPU services; reserves one GPU solely to satisfy the available allocation.
+partition: gpuA40x4
+time_limit: 00:10:00
+cpus_per_task: 4
+memory: 8G
+apptainer_binary: /u/galvesfaria/rexs/deploy/delta/apptainer-delta
+image_cache: /u/galvesfaria/rexs/deploy/delta/cache
+image_dir: /u/galvesfaria/rexs/deploy/delta/images
+dataset_root: /u/galvesfaria/rexs/deploy/delta
+run_root: /u/galvesfaria/rexs/deploy/delta/runs
+images:
+  literegistry-redis: /u/galvesfaria/rexs/deploy/delta/images/literegistry-redis.sif
+  literegistry-gateway: /u/galvesfaria/rexs/deploy/delta/images/literegistry-gateway.sif
+  literegistry-podman: /u/galvesfaria/rexs/deploy/delta/images/literegistry-podman.sif
+  literegistry-mirror: /u/galvesfaria/rexs/deploy/delta/images/literegistry-mirror.sif
+  literegistry-warmup: /u/galvesfaria/rexs/deploy/delta/images/literegistry-warmup.sif
+  literegistry-live-fire: /u/galvesfaria/rexs/deploy/delta/images/literegistry-live-fire.sif
+account: bhfl-delta-gpu
+sbatch:
+  gpus-per-node: 1

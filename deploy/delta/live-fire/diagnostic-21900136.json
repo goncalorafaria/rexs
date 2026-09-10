@@ -1,0 +1,58 @@
+[
+  {
+    "image": "hamishi740/swerl-tmax-v3:000d2b03b33d",
+    "command": "pwd",
+    "exit_code": 0,
+    "stdout": "/workspace\n",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:000d2b03b33d",
+    "command": "printf '%s' 'rexs-live-fire-0' > /workspace/rexs-live-fire.txt",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:000d2b03b33d",
+    "command": "test \"$(cat /workspace/rexs-live-fire.txt)\" = 'rexs-live-fire-0'",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:000d2b03b33d",
+    "command": "python -c \"import hashlib; assert len(hashlib.sha256(b'rexs').hexdigest()) == 64\"",
+    "exit_code": 127,
+    "stdout": "",
+    "stderr": "/bin/bash: line 1: python: command not found\n"
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:11b83b5d4f9f",
+    "command": "pwd",
+    "exit_code": 0,
+    "stdout": "/workspace\n",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:11b83b5d4f9f",
+    "command": "printf '%s' 'rexs-live-fire-1' > /workspace/rexs-live-fire.txt",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:11b83b5d4f9f",
+    "command": "test \"$(cat /workspace/rexs-live-fire.txt)\" = 'rexs-live-fire-1'",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "image": "hamishi740/swerl-tmax-v3:11b83b5d4f9f",
+    "command": "python -c \"import hashlib; assert len(hashlib.sha256(b'rexs').hexdigest()) == 64\"",
+    "exit_code": 127,
+    "stdout": "",
+    "stderr": "/bin/bash: line 1: python: command not found\n"
+  }
+]

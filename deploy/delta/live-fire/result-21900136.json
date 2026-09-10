@@ -1,0 +1,33 @@
+{
+  "attempted": 4,
+  "checkpoint_file": null,
+  "close_seconds_mean": 0.5053661057609133,
+  "command_seconds_mean": 0.1162848934327485,
+  "command_seconds_p50": 0.09595673601143062,
+  "command_seconds_p95": 0.21244029607623816,
+  "commands_completed": 16,
+  "commands_per_second": 0.8026543057931653,
+  "concurrency": 2,
+  "connection_limit": 2,
+  "elapsed_seconds": 19.9338617939502,
+  "failure_details": [],
+  "failures": 0,
+  "gateway_url": "http://gpub006:22721",
+  "instance_counts": {
+    "podman-0": 1,
+    "podman-2": 3
+  },
+  "manifest_path": "/u/galvesfaria/rexs/deploy/delta/live-fire/smoke.jsonl",
+  "nonzero_commands": 4,
+  "peak_live_sessions": 2,
+  "podman_replicas": 4,
+  "resumed": 0,
+  "selected": 4,
+  "startup_seconds_mean": 8.801525334769394,
+  "startup_seconds_p50": 5.7669542781077325,
+  "startup_seconds_p95": 12.0781630219426,
+  "successes": 4,
+  "timed_out_commands": 0,
+  "trajectories_per_second": 0.20066357644829133,
+  "truncated_commands": 0
+}

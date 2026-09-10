@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rexs.state import TERMINAL_STATES, ExperimentRecord, StateStore
+
+logger = logging.getLogger(__name__)
 
 _SLURM_STATUS = {
     "PENDING": "PENDING",
@@ -54,7 +59,15 @@ class Controller:
         for experiment in experiments:
             if not experiment.job_id or experiment.status in TERMINAL_STATES:
                 continue
-            status, exit_code, detail = self._slurm_status(experiment.job_id)
+            try:
+                status, exit_code, detail = self._slurm_status(experiment.job_id)
+            except (OSError, subprocess.SubprocessError):
+                if identifier:
+                    raise
+                logger.warning(
+                    "Could not refresh Slurm job %s; continuing with other jobs", experiment.job_id, exc_info=True
+                )
+                continue
             if status != experiment.status or exit_code:
                 self.store.update_status(experiment.id, status, detail=detail, exit_code=exit_code)
             updates.append(
@@ -66,7 +79,73 @@ class Controller:
                     exit_code=exit_code,
                 )
             )
+        try:
+            self.refresh_runtimes()
+        except (OSError, subprocess.SubprocessError):
+            logger.warning("Could not refresh elapsed runtimes; retaining saved values", exc_info=True)
+        try:
+            self.refresh_start_estimates()
+        except (OSError, subprocess.SubprocessError):
+            logger.warning("Could not refresh scheduled start estimates", exc_info=True)
         return updates
+
+    def refresh_start_estimates(self):
+        records = [item for item in self.store.active() if item.job_id and item.status in {"SUBMITTED", "PENDING"}]
+        for start in range(0, len(records), 500):
+            batch = records[start : start + 500]
+            ids = {item.job_id: item.id for item in batch}
+            result = self.runner(
+                ["squeue", "--start", "--jobs", ",".join(ids), "--noheader", "--format=%i|%S"],
+                check=True,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                env={**os.environ, "TZ": "UTC", "SLURM_TIME_FORMAT": "standard"},
+            )
+            estimates = dict.fromkeys(ids)
+            for line in result.stdout.splitlines():
+                job, separator, value = line.strip().partition("|")
+                if not separator or job not in ids:
+                    continue
+                try:
+                    estimates[job] = datetime.fromisoformat(value).replace(tzinfo=UTC).isoformat()
+                except ValueError:
+                    pass
+            with self.store.connect() as db:
+                for job, estimate in estimates.items():
+                    db.execute("UPDATE experiments SET estimated_start_at=? WHERE id=?", (estimate, ids[job]))
+
+    def refresh_runtimes(self):
+        records = [
+            item
+            for item in self.store.list(limit=10000)
+            if item.job_id and (item.status not in TERMINAL_STATES or item.runtime_seconds is None)
+        ]
+        for start in range(0, len(records), 500):
+            batch = records[start : start + 500]
+            ids = {item.job_id: item.id for item in batch}
+            result = self.runner(
+                [
+                    "sacct",
+                    "--jobs",
+                    ",".join(ids),
+                    "--noheader",
+                    "--parsable2",
+                    "--allocations",
+                    "--format=JobIDRaw,ElapsedRaw",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            with self.store.connect() as db:
+                for line in result.stdout.splitlines():
+                    fields = line.strip().split("|")
+                    if len(fields) >= 2 and fields[0] in ids and fields[1].isdigit():
+                        db.execute(
+                            "UPDATE experiments SET runtime_seconds=? WHERE id=?", (int(fields[1]), ids[fields[0]])
+                        )
 
     def cancel(self, identifier: str) -> ExperimentRecord:
         experiment = self.store.get(identifier)
@@ -110,13 +189,22 @@ class Controller:
         return output
 
     def _slurm_status(self, job_id: str) -> tuple[str, str | None, str | None]:
-        current = self.runner(
-            ["squeue", "--jobs", job_id, "--noheader", "--format=%T"],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-        states = [line.strip() for line in current.stdout.splitlines() if line.strip()]
+        queue_error = None
+        try:
+            current = self.runner(
+                ["squeue", "--jobs", job_id, "--noheader", "--format=%T"],
+                check=True,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Slurm can reject a completed job ID once it leaves the live queue.
+            # Accounting remains authoritative even when squeue exits nonzero.
+            queue_error = exc
+            states = []
+        else:
+            states = [line.strip() for line in current.stdout.splitlines() if line.strip()]
         if states:
             state = _normalize_state(states[0])
             return state, None, f"squeue: {states[0]}"
@@ -126,9 +214,12 @@ class Controller:
             check=True,
             text=True,
             capture_output=True,
+            timeout=30,
         )
         rows = [line.strip() for line in history.stdout.splitlines() if line.strip()]
         if not rows:
+            if queue_error is not None:
+                raise queue_error
             return "UNKNOWN", None, "job absent from squeue and sacct"
         state_text, _, exit_code = rows[0].partition("|")
         return _normalize_state(state_text), exit_code or None, f"sacct: {rows[0]}"

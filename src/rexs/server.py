@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -17,6 +18,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import yaml
 
 from rexs.controller import Controller
+from rexs.metrics import MetricsCollector
+from rexs.resources import resource_summary
 from rexs.state import default_db_path
 from rexs.web import APP_HTML
 
@@ -142,6 +145,7 @@ class RexsServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], controller: Controller, poll_interval: float) -> None:
         super().__init__(address, RexsHandler)
         self.controller = controller
+        self.metrics = MetricsCollector(controller.store)
         self.poll_interval = poll_interval
         self.stop_event = threading.Event()
 
@@ -153,6 +157,15 @@ class RexsHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
+            if path == "/assets/rexs-logo.png":
+                payload = files("rexs").joinpath("static/rexs-logo.png").read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if path == "/" or path.startswith("/experiment/"):
                 self._text(APP_HTML, content_type="text/html; charset=utf-8")
                 return
@@ -167,7 +180,22 @@ class RexsHandler(BaseHTTPRequestHandler):
                 records = self.server.controller.store.list(limit=500)
                 if statuses:
                     records = [item for item in records if item.status in statuses]
-                self._json([item.as_dict() for item in records])
+                with self.server.controller.store.connect() as db:
+                    replica_counts = dict(
+                        db.execute(
+                            "SELECT experiment_id, COUNT(*) FROM task_replicas GROUP BY experiment_id"
+                        ).fetchall()
+                    )
+                self._json(
+                    [
+                        {
+                            **item.as_dict(),
+                            "resources": resource_summary(item),
+                            "replica_count": replica_counts.get(item.id, 0),
+                        }
+                        for item in records
+                    ]
+                )
                 return
             if path.startswith("/api/experiments/"):
                 identifier = path.removeprefix("/api/experiments/")
@@ -211,8 +239,10 @@ class RexsHandler(BaseHTTPRequestHandler):
         return {
             "experiment": experiment.as_dict(include_spec=True),
             "spec": spec,
+            "resources": resource_summary(experiment),
             "tasks": self.server.controller.logs(identifier, lines=line_count),
             "events": self.server.controller.store.events(identifier),
+            "metrics": self.server.metrics.snapshot(identifier),
         }
 
     def _json(self, value: Any, *, status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -243,6 +273,7 @@ def serve(
     server = RexsServer((host, port), controller, poll_interval)
     poller = threading.Thread(target=_poll, args=(server,), daemon=True, name="rexs-slurm-poller")
     poller.start()
+    threading.Thread(target=_collect_metrics, args=(server,), daemon=True, name="rexs-metrics").start()
     print(f"REXS server listening on http://{host}:{port} (db: {controller.store.path})")
     try:
         server.serve_forever(poll_interval=0.5)
@@ -319,3 +350,21 @@ def _poll(server: RexsServer) -> None:
         # A transient Slurm/SQLite failure must not kill the long-lived poller.
         except Exception as exc:  # noqa: BLE001
             print(f"REXS poll failed: {exc}", file=sys.stderr)
+
+
+def _collect_metrics(server: RexsServer) -> None:
+    while not server.stop_event.is_set():
+        try:
+            experiments = server.controller.store.list(limit=10000)
+        except Exception as exc:  # noqa: BLE001 - retry transient SQLite failures
+            print(f"REXS metrics scan failed: {exc}", file=sys.stderr)
+            server.stop_event.wait(max(30, server.poll_interval))
+            continue
+        for experiment in experiments:
+            if server.stop_event.is_set():
+                return
+            try:
+                server.metrics.collect(experiment.id)
+            except Exception as exc:  # noqa: BLE001 - optional capture must not affect jobs
+                print(f"REXS metrics capture failed: {exc}", file=sys.stderr)
+        server.stop_event.wait(max(30, server.poll_interval))

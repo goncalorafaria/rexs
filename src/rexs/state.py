@@ -51,6 +51,8 @@ class ExperimentRecord:
     updated_at: str
     submitted_at: str | None
     finished_at: str | None
+    runtime_seconds: int | None = None
+    estimated_start_at: str | None = None
 
     def as_dict(self, *, include_spec: bool = False) -> dict[str, Any]:
         value = asdict(self)
@@ -305,6 +307,24 @@ class StateStore:
                     detail TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS wandb_sources (
+                    id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL, label TEXT NOT NULL, offset INTEGER NOT NULL DEFAULT 7,
+                    error TEXT
+                );
+                CREATE INDEX IF NOT EXISTS wandb_sources_experiment_idx ON wandb_sources(experiment_id);
+                CREATE TABLE IF NOT EXISTS wandb_records (
+                    source_id TEXT NOT NULL REFERENCES wandb_sources(id) ON DELETE CASCADE,
+                    offset INTEGER NOT NULL, kind TEXT NOT NULL, timestamp REAL, payload TEXT NOT NULL,
+                    PRIMARY KEY(source_id, offset)
+                );
+                CREATE TABLE IF NOT EXISTS wandb_gpu_latest (
+                    source_id TEXT NOT NULL REFERENCES wandb_sources(id) ON DELETE CASCADE,
+                    gpu TEXT NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL, timestamp REAL NOT NULL,
+                    PRIMARY KEY(source_id,gpu,metric)
+                );
+
                 CREATE INDEX IF NOT EXISTS experiments_status_idx
                     ON experiments(status, created_at);
                 CREATE INDEX IF NOT EXISTS events_experiment_idx
@@ -312,6 +332,10 @@ class StateStore:
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(experiments)")}
+            if "estimated_start_at" not in columns:
+                connection.execute("ALTER TABLE experiments ADD COLUMN estimated_start_at TEXT")
+            if "runtime_seconds" not in columns:
+                connection.execute("ALTER TABLE experiments ADD COLUMN runtime_seconds INTEGER")
             if "spec_text" not in columns:
                 connection.execute("ALTER TABLE experiments ADD COLUMN spec_text TEXT NOT NULL DEFAULT ''")
 
@@ -358,6 +382,8 @@ def _experiment(row: sqlite3.Row) -> ExperimentRecord:
         updated_at=row["updated_at"],
         submitted_at=row["submitted_at"],
         finished_at=row["finished_at"],
+        runtime_seconds=row["runtime_seconds"],
+        estimated_start_at=row["estimated_start_at"],
     )
 
 

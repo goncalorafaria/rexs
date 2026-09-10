@@ -1,0 +1,21 @@
+version: v2
+description: Bounded single-node LiteRegistry Podman CPU smoke test
+tasks:
+- name: stack-smoke
+  image:
+    beaker: literegistry-podman
+  command:
+  - python
+  - /deployment/smoke.py
+  resources:
+    gpuCount: 0
+    cpuCount: 4
+    memory: 8 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+    readOnly: true
+  result:
+    path: /results

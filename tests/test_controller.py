@@ -128,6 +128,7 @@ def test_http_api_lists_tracked_experiments(tmp_path: Path) -> None:
             payload = json.load(response)
         assert payload[0]["id"] == record.id
         assert payload[0]["status"] == "GENERATED"
+        assert payload[0]["replica_count"] == 3
         assert "spec_text" not in payload[0]
         with urlopen(f"http://{host}:{port}/api/experiments/{record.id}", timeout=5) as response:
             detail = json.load(response)
@@ -211,3 +212,79 @@ tasks:
     assert stored.spec_text == spec.read_text(encoding="utf-8")
     assert Path(stored.script_path).is_file()
     assert [event["status"] for event in StateStore(db).events("9876")] == ["GENERATED", "SUBMITTED"]
+
+
+@pytest.mark.parametrize("state,exit_code", [("COMPLETED", "0:0"), ("FAILED", "1:0")])
+def test_finished_job_reconciles_when_squeue_rejects_id(tmp_path, state, exit_code):
+    store = StateStore(tmp_path / "state.sqlite3")
+    record = _record(store, tmp_path)
+    store.record_submission(record.id, "12345", "submitted")
+
+    def runner(command, **kwargs):
+        if command[0] == "squeue":
+            raise subprocess.CalledProcessError(1, command, stderr="Invalid job id specified")
+        return subprocess.CompletedProcess(command, 0, stdout=f"{state}|{exit_code}\n", stderr="")
+
+    Controller(store.path, runner=runner).refresh()
+    saved = store.get(record.id)
+    assert saved.status == state
+    assert saved.exit_code == exit_code
+    assert saved.finished_at is not None
+
+
+def test_one_failed_query_does_not_block_other_jobs(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    first = _record(store, tmp_path)
+    second = _record(store, tmp_path)
+    store.record_submission(first.id, "12345", "submitted")
+    store.record_submission(second.id, "12346", "submitted")
+
+    def runner(command, **kwargs):
+        if "12345" in command:
+            raise subprocess.CalledProcessError(1, command, stderr="Slurm unavailable")
+        return subprocess.CompletedProcess(command, 0, stdout="RUNNING\n", stderr="")
+
+    controller = Controller(store.path, runner=runner)
+    updates = controller.refresh()
+    assert [update.job_id for update in updates] == ["12346"]
+    assert store.get(first.id).status == "SUBMITTED"
+    assert store.get(second.id).status == "RUNNING"
+    with pytest.raises(subprocess.CalledProcessError):
+        controller.refresh(first.id)
+
+
+def test_runtime_backfills_finished_jobs_and_persists(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    record = _record(store, tmp_path)
+    store.record_submission(record.id, "12345", "submitted")
+    store.update_status(record.id, "COMPLETED", exit_code="0:0")
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        assert "--format=JobIDRaw,ElapsedRaw" in command
+        return subprocess.CompletedProcess(command, 0, stdout="12345|204\n12345.batch|999\n", stderr="")
+
+    controller = Controller(store.path, runner=runner)
+    controller.refresh()
+    assert StateStore(store.path).get(record.id).runtime_seconds == 204
+    controller.refresh()
+    assert len(calls) == 1
+
+
+def test_start_estimates_use_utc_and_clear_unavailable_values(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    record = _record(store, tmp_path)
+    store.record_submission(record.id, "12345", "submitted")
+    outputs = iter(["12345|2026-09-10T06:38:07\n", "12345|N/A\n"])
+
+    def runner(command, **kwargs):
+        assert "--start" in command
+        assert kwargs["env"]["TZ"] == "UTC"
+        return subprocess.CompletedProcess(command, 0, stdout=next(outputs), stderr="")
+
+    controller = Controller(store.path, runner=runner)
+    controller.refresh_start_estimates()
+    assert store.get(record.id).estimated_start_at == "2026-09-10T06:38:07+00:00"
+    controller.refresh_start_estimates()
+    assert store.get(record.id).estimated_start_at is None

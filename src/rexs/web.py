@@ -3,6 +3,7 @@
 APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" type="image/png" href="/assets/rexs-logo.png">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>REXS · Experiments</title>
@@ -34,7 +35,7 @@ button { cursor: pointer; }
 .shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; padding: 24px 16px; background: var(--nav); color: white; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 28px; }
-.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: #4a8df0; font-weight: 800; font-size: 18px; }
+.brand-mark { width: 44px; height: 44px; display: block; object-fit: contain; flex-shrink: 0; }
 .brand-name { font-size: 19px; font-weight: 800; letter-spacing: .02em; }
 .brand-caption { color: var(--nav-muted); font-size: 11px; margin-top: 2px; }
 .nav-label { padding: 16px 12px 7px; color: #727c99; font-size: 11px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
@@ -70,7 +71,7 @@ button { cursor: pointer; }
 .filter-chip.active { border-color: #8bb8f4; background: var(--primary-soft); color: #1256b5; }
 .search { width: 100%; height: 38px; border: 1px solid #cfd4dc; border-radius: 6px; padding: 0 12px; outline: none; }
 .search:focus { border-color: #6da1e9; box-shadow: 0 0 0 3px #e8f1fd; }
-.table-card { overflow: hidden; }
+.table-card { overflow-x: auto; }
 .table-summary { display: flex; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
 .table-summary strong { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; }
@@ -106,6 +107,19 @@ tbody tr:last-child td { border-bottom: 0; }
 .tab-content { display: none; padding: 22px; }
 .tab-content.active { display: block; }
 .section-title { margin: 0 0 14px; font-size: 17px; }
+.resource-chips { display:flex; flex-wrap:wrap; gap:3px; min-width:165px; max-width:245px; }
+.resource-chip { display:inline-flex; align-items:center; gap:3px; padding:2px 5px; border-radius:4px; font-size:10px; line-height:1.3; font-weight:600; white-space:nowrap; }
+.resource-chip svg { width:13px; height:13px; }
+.resource-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin:14px 0 10px; }
+.resource-tile { display:flex; align-items:center; gap:13px; padding:18px; border:1px solid currentColor; border-radius:10px; }
+.resource-tile svg { width:34px; height:34px; flex-shrink:0; }
+.resource-number { font-size:25px; font-weight:800; line-height:1.2; }
+.resource-caption { font-size:12px; margin-top:5px; }
+.resource-gpu { color:#177448; background:#edf9f0; }
+.resource-cpu { color:#215daa; background:#eef5ff; }
+.resource-memory { color:#945c05; background:#fff7df; }
+.resource-node { color:#7743aa; background:#f7f0ff; }
+.resource-note { margin-bottom:25px; font-size:12px; }
 .task-list { display: grid; gap: 10px; }
 .task-row { display: grid; grid-template-columns: minmax(180px, 1fr) 100px minmax(260px, 1.4fr) auto; align-items: center; gap: 12px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 7px; }
 .task-name { font-weight: 750; }
@@ -168,13 +182,26 @@ tbody tr:last-child td { border-bottom: 0; }
   .task-row { grid-template-columns: 1fr auto; }
   .task-row .path { display: none; }
 }
+.tab-content[data-content="metrics"] { padding:10px; }
+.tab-content[data-content="metrics"] > .section-title { display:none; }
+.spark-cluster { margin:0 0 16px; }
+.spark-cluster h3 { font-size:12px; margin:0 0 6px; font-weight:650; }
+.spark-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(105px,1fr)); gap:4px; margin-bottom:6px; }
+.spark-row + .spark-row { padding-top:6px; border-top:1px dotted var(--line); }
+.spark-tile { position:relative; min-width:0; height:48px; padding:2px 3px 2px 17px; border:1px solid #e8edf2; border-radius:4px; }
+.spark-number { position:absolute; top:5px; left:5px; font-size:10px; color:var(--muted); }
+.gpu-spark { display:block; width:100%; height:44px; }
+.spark-point { opacity:0; } .spark-point:hover,.spark-single { opacity:1; }
+.spark-empty { display:block; text-align:center; color:var(--muted); padding-top:12px; }
+.spark-warning { border-style:dashed; }
+.tabs { flex-wrap:wrap; }
 </style>
 </head>
 <body>
 <div class="shell">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">R</div>
+      <img class="brand-mark" src="/assets/rexs-logo.png" width="44" height="44" alt="REXS T-rex badge">
       <div class="brand-copy"><div class="brand-name">REXS</div><div class="brand-caption">Experiments on Slurm</div></div>
     </div>
     <nav aria-label="Main navigation">
@@ -214,6 +241,70 @@ let refreshTimer = null;
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 }
+// Render terminal styles only; never interpret log text as HTML or links.
+function renderAnsi(value) {
+  const palette = ['#111827','#f87171','#86efac','#fde047','#60a5fa','#e879f9','#67e8f9','#d5dbea',
+    '#94a3b8','#fca5a5','#bbf7d0','#fef08a','#93c5fd','#f0abfc','#a5f3fc','#ffffff'];
+  const indexed = n => {
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    if (n < 16) return palette[n];
+    if (n >= 232) { const v = 8 + (n-232)*10; return `rgb(${v},${v},${v})`; }
+    const v = n-16, levels = [0,95,135,175,215,255];
+    return `rgb(${levels[Math.floor(v/36)]},${levels[Math.floor(v/6)%6]},${levels[v%6]})`;
+  };
+  let state = {}, html = '', position = 0;
+  const text = String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const emit = chunk => {
+    const safe = escapeHtml(chunk.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ''));
+    if (!safe) return;
+    const styles = [];
+    if (state.fg) styles.push(`color:${state.fg}`);
+    if (state.bg) styles.push(`background-color:${state.bg}`);
+    if (state.bold) styles.push('font-weight:700');
+    if (state.dim) styles.push('opacity:0.65');
+    if (state.italic) styles.push('font-style:italic');
+    if (state.underline || state.strike) styles.push(`text-decoration:${[state.underline && 'underline',state.strike && 'line-through'].filter(Boolean).join(' ')}`);
+    html += styles.length ? `<span style="${styles.join(';')}">${safe}</span>` : safe;
+  };
+  // Consume CSI, OSC (including hyperlinks), and other terminal control strings.
+  const controls = /(?:\x1b\[|\x9b)([0-?]*)([ -\/]*)([@-~])|(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)|\x1b[PX^_][\s\S]*?(?:\x1b\\|$)|\x1b[ -\/]*[@-Z\\-_]|\x1b\[[0-?]*[ -\/]*$/g;
+  for (const match of text.matchAll(controls)) {
+    emit(text.slice(position, match.index));
+    position = match.index + match[0].length;
+    if (match[3] !== 'm' || match[2] || !/^[\d;]*$/.test(match[1])) continue;
+    const codes = match[1].split(';').map(n => Number(n || 0));
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === 0) state = {};
+      else if (code === 1) state.bold = true;
+      else if (code === 2) state.dim = true;
+      else if (code === 3) state.italic = true;
+      else if (code === 4) state.underline = true;
+      else if (code === 9) state.strike = true;
+      else if (code === 22) { state.bold = false; state.dim = false; }
+      else if (code === 23) state.italic = false;
+      else if (code === 24) state.underline = false;
+      else if (code === 29) state.strike = false;
+      else if (code === 39) delete state.fg;
+      else if (code === 49) delete state.bg;
+      else if (code >= 30 && code <= 37) state.fg = palette[code-30];
+      else if (code >= 90 && code <= 97) state.fg = palette[code-90+8];
+      else if (code >= 40 && code <= 47) state.bg = palette[code-40];
+      else if (code >= 100 && code <= 107) state.bg = palette[code-100+8];
+      else if (code === 38 || code === 48) {
+        const target = code === 38 ? 'fg' : 'bg', mode = codes[++i];
+        if (mode === 5) { const color = indexed(codes[++i]); if (color) state[target] = color; }
+        else if (mode === 2) {
+          const rgb = codes.slice(i+1, i+4); i += 3;
+          if (rgb.length === 3 && rgb.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) state[target] = `rgb(${rgb.join(',')})`;
+        }
+      }
+    }
+  }
+  emit(text.slice(position));
+  return html;
+}
+
 function statusClass(status) {
   if (status === 'RUNNING') return 'running';
   if (status === 'COMPLETED') return 'completed';
@@ -280,6 +371,23 @@ async function loadExperiments({refresh=false} = {}) {
     if (location.pathname === '/') renderList();
   } catch (error) { setError(error.message); }
 }
+function formatStartEstimate(item) {
+  const stamp = Date.parse(item.estimated_start_at || '');
+  if (!Number.isFinite(stamp)) return 'Estimate unavailable';
+  if (stamp < Date.now()) return 'Awaiting new estimate';
+  const minutes = Math.ceil((stamp-Date.now())/60000);
+  const wait = minutes < 60 ? `${minutes} min` : `${Math.floor(minutes/60)} h ${minutes%60} min`;
+  return `~${new Date(stamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZoneName:'short'})} (in ${wait})`;
+}
+function formatRuntime(item) {
+  if (['GENERATED','SUBMITTED','PENDING','SUBMISSION_FAILED'].includes(item.status)) return 'Not started';
+  const seconds = item.runtime_seconds;
+  if (!Number.isFinite(seconds)) return '—';
+  if (seconds === 0) return '0 min';
+  if (seconds < 60) return '<1 min';
+  if (seconds < 3600) return `${(seconds / 60).toFixed(1)} min`;
+  return `${Math.floor(seconds / 3600)} h ${Math.floor(seconds % 3600 / 60)} min`;
+}
 function renderList() {
   document.title = 'REXS · Experiments';
   document.getElementById('breadcrumb').innerHTML = 'REXS / <strong>Experiments</strong>';
@@ -296,15 +404,16 @@ function renderList() {
       <td>${statusMarkup(item.status)}</td>
       <td><button class="name-link" data-open="${escapeHtml(item.id)}">${escapeHtml(item.name)}</button><div class="mono muted">${escapeHtml(shortId(item.id))}</div></td>
       <td class="mono">${escapeHtml(item.job_id || 'Not submitted')}</td>
-      <td>${escapeHtml(formatTime(item.created_at))}</td>
-      <td>${escapeHtml(formatTime(item.updated_at))}</td>
+      <td class="mono" title="Total task replicas">${escapeHtml(item.replica_count ?? '—')}</td>
+      <td>${renderResources(item.resources, true)}</td>
+      <td class="mono" title="Elapsed execution time reported by Slurm; excludes queue wait">${escapeHtml(formatRuntime(item))}${['SUBMITTED','PENDING'].includes(item.status) ? `<div class="muted" style="font:11px/1.5 sans-serif" title="Slurm estimated start; may change">Start ${escapeHtml(formatStartEstimate(item))}</div>` : ''}</td>
       <td><button class="button" data-open="${escapeHtml(item.id)}">View</button></td>
-    </tr>`).join('') : `<tr><td colspan="6"><div class="empty"><div class="empty-icon">⌕</div><strong>No experiments found</strong><div>Try another status or search term.</div></div></td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="7"><div class="empty"><div class="empty-icon">⌕</div><strong>No experiments found</strong><div>Try another status or search term.</div></div></td></tr>`;
   app.innerHTML = `
     <div class="page-head"><div><h1>Experiments</h1><p class="page-subtitle">History of Beaker experiment configurations executed through Slurm.</p></div></div>
     <div class="filter-card"><div class="status-filters" aria-label="Experiment status">${chips}</div><input class="search" id="search" type="search" placeholder="Search name, ID, Slurm job, or status" value="${escapeHtml(activeSearch)}" aria-label="Search experiments"></div>
     <div class="table-card"><div class="table-summary"><strong>${rows.length}</strong>&nbsp;of&nbsp;<strong>${experiments.length}</strong>&nbsp;experiments</div>
-      <table aria-label="Experiment history"><thead><tr><th>Status</th><th>Name</th><th>Slurm job</th><th>Created</th><th>Updated</th><th></th></tr></thead><tbody>${body}</tbody></table>
+      <table aria-label="Experiment history"><thead><tr><th>Status</th><th>Name</th><th>Slurm job</th><th>Replicas</th><th>Resources requested</th><th>Runtime</th><th></th></tr></thead><tbody>${body}</tbody></table>
     </div>`;
   document.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
     activeFilter = button.dataset.filter;
@@ -319,7 +428,7 @@ function syncNavigationFilter() {
 }
 function metadataCards(item, taskCount) {
   const values = [
-    ['REXS ID', item.id], ['Slurm job', item.job_id || 'Not submitted'], ['Task replicas', taskCount], ['Created', formatTime(item.created_at)],
+    ['REXS ID', item.id], ['Slurm job', item.job_id || 'Not submitted'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
   ];
   return values.map(([label,value]) => `<div class="meta-card"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value ${label.includes('ID') || label.includes('job') ? 'mono' : ''}" title="${escapeHtml(value)}">${escapeHtml(value)}</div></div>`).join('');
 }
@@ -341,7 +450,7 @@ function logPanel(tasks) {
   return `<div class="log-layout"><div class="log-nav">${tasks.map(task => {
     const key = `${task.name}:${task.replica_rank}`;
     return `<button class="log-option ${key === selectedLog ? 'active' : ''}" data-log="${escapeHtml(key)}"><strong>${escapeHtml(task.name)}</strong><br><span class="muted">Replica ${task.replica_rank}${task.exists ? '' : ' · waiting'}</span></button>`;
-  }).join('')}</div><div class="log-view"><div class="log-toolbar"><span class="mono">${escapeHtml(current.log_path || `${current.name}.${current.replica_rank}.log`)}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select></div><pre class="log-output">${escapeHtml(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
+  }).join('')}</div><div class="log-view"><div class="log-toolbar"><span class="mono">${escapeHtml(current.log_path || `${current.name}.${current.replica_rank}.log`)}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select></div><pre class="log-output">${renderAnsi(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
 }
 async function loadDetail(identifier, {quiet=false} = {}) {
   if (!quiet) app.innerHTML = '<div class="loading"><span><i class="spinner"></i>Loading experiment…</span></div>';
@@ -351,13 +460,63 @@ async function loadDetail(identifier, {quiet=false} = {}) {
     renderDetail(detail);
   } catch (error) { setError(error.message); app.innerHTML = '<div class="empty">Experiment could not be loaded.</div>'; }
 }
+function gpuSparkline(points, color, maximum, extent, unit) {
+  points = (points || []).filter(p => p.length === 2 && p.every(Number.isFinite));
+  if (!points.length) return '<span class="spark-empty" title="No samples">—</span>';
+  const x = t => 2+(t-extent[0])/(extent[1]-extent[0] || 1)*112;
+  const y = v => 40-Math.max(0,Math.min(maximum,v))/maximum*36;
+  const path = points.map((p,i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(2)},${y(p[1]).toFixed(2)}`).join(' ');
+  const area = `${path} L${x(points[points.length-1][0])},40 L${x(points[0][0])},40 Z`;
+  return `<svg class="gpu-spark" viewBox="0 0 116 44" role="img" aria-label="${escapeHtml(unit)} over time"><path d="${area}" fill="${color}" opacity=".18"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5"/>${points.map(p => `<circle cx="${x(p[0])}" cy="${y(p[1])}" r="3" fill="${color}" class="spark-point${points.length === 1 ? ' spark-single' : ''}"><title>${escapeHtml(new Date(p[0]*1000).toLocaleString())} · ${p[1].toFixed(1)} ${escapeHtml(unit)}</title></circle>`).join('')}</svg>`;
+}
+
+function renderGpuMetrics(metrics, status) {
+  if (!metrics?.gpus.length) return `<div class="empty">${escapeHtml(metrics?.error || 'No GPU samples yet.')}</div>`;
+  const notes = [!metrics.enabled && 'Capture disabled', metrics.error].filter(Boolean);
+  const times = metrics.gpus.flatMap(g => Object.values(g.series || {}).flat().map(p => p[0])).filter(Number.isFinite);
+  const extent = times.length ? times.reduce((e,t) => [Math.min(e[0],t),Math.max(e[1],t)], [Infinity,-Infinity]) : [0,0];
+  const memoryInPercent = metrics.gpus.every(g => (g.series?.memoryAllocated || []).length > 0);
+  const getPoints = (gpu, kind) => kind === 'utilization' ? gpu.series?.utilization : memoryInPercent ? gpu.series?.memoryAllocated : (gpu.series?.memoryAllocatedBytes || []).map(p => [p[0],p[1]/1073741824]);
+  const memoryMax = memoryInPercent ? 100 : metrics.gpus.flatMap(g => getPoints(g,'memory')).reduce((m,p) => Math.max(m,p[1]),1)*1.05;
+  return `${notes.length ? `<p class="muted">${escapeHtml(notes.join(' · '))}</p>` : ''}` + [['utilization','Utilization','#16804a'],['memory','Memory','#d97706']].map(([kind,label,color]) => `<section class="spark-cluster"><h3 style="color:${color}">${label}</h3>${metrics.sources.map(source => {
+    const gpus = metrics.gpus.filter(g => g.source_id === source.id);
+    if (!gpus.length) return '';
+    return `<div class="spark-row" aria-label="${escapeHtml(source.label)}">${gpus.map(gpu => {
+      const stamp = Math.max(...Object.values(gpu.timestamps));
+      const stale = !terminalStatuses.has(status) && Date.now()/1000-stamp > 120;
+      const detail = `${source.label}\nGPU ${gpu.gpu} · ${label}\n${stale ? 'Stale sample · ' : ''}${new Date(stamp*1000).toLocaleString()}${source.error ? '\n'+source.error : ''}`;
+      return `<div class="spark-tile${stale || source.error ? ' spark-warning' : ''}" title="${escapeHtml(detail)}"><span class="spark-number">${escapeHtml(gpu.gpu)}</span>${gpuSparkline(getPoints(gpu,kind),color,kind === 'utilization' ? 100 : memoryMax,extent,kind === 'utilization' || memoryInPercent ? '%' : 'GiB')}</div>`;
+    }).join('')}</div>`;
+  }).join('')}</section>`).join('');
+}
+
+function renderResources(resources, compact = false) {
+  if (compact && !resources?.available) return `<span class="muted" title="${escapeHtml(resources?.reason || 'Resource request unavailable')}">—</span>`;
+  if (!resources?.available) return `<h2 class="section-title">Resources requested</h2><p class="muted">${escapeHtml(resources?.reason || 'Resource request unavailable.')}</p>`;
+  const icons = {
+    gpu: '<rect x="3" y="6" width="24" height="18" rx="2"/><circle cx="13" cy="15" r="5"/><path d="M22 10v10M7 24v3m5-3v3m5-3v3M27 10h3v10h-3"/>',
+    cpu: '<rect x="7" y="7" width="18" height="18" rx="3"/><rect x="12" y="12" width="8" height="8"/><path d="M11 3v4m5-4v4m5-4v4M11 25v4m5-4v4m5-4v4M3 11h4m-4 5h4m-4 5h4m18-10h4m-4 5h4m-4 5h4"/>',
+    memory: '<rect x="2" y="8" width="28" height="15" rx="2"/><path d="M6 12h4v6H6zm8 0h4v6h-4zm8 0h4v6h-4zM6 23v4m5-4v4m5-4v4m5-4v4m5-4v4"/>',
+    node: '<rect x="5" y="3" width="22" height="11" rx="2"/><rect x="5" y="18" width="22" height="11" rx="2"/><path d="M10 8h1m4 0h7M10 23h1m4 0h7"/>'
+  };
+  const number = n => n == null ? '—' : n.toLocaleString(undefined, {maximumFractionDigits:1});
+  const cards = [
+    ['gpu', `${number(resources.gpus)} ${resources.gpu_type || 'GPUs'}`, 'GPUs across the experiment'],
+    ['cpu', `${number(resources.cpus)} CPUs`, 'Total CPUs requested'],
+    ['memory', resources.memory_all ? 'All memory' : `${number(resources.memory_gib)} GiB`, 'Total host memory'],
+    ['node', `${number(resources.nodes)} ${resources.nodes === 1 ? 'node' : 'nodes'}`, 'Compute nodes']
+  ];
+  if (compact) return `<div class="resource-chips" aria-label="Total requested resources">${cards.map(([kind,value,label]) => `<span class="resource-chip resource-${kind}" title="${escapeHtml(label + (kind === 'gpu' && resources.gpu_type_from_partition ? ' · model inferred from partition' : ''))}"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">${icons[kind]}</svg>${escapeHtml(value)}</span>`).join('')}</div>`;
+  return `<h2 class="section-title">Resources requested</h2><div class="resource-grid">${cards.map(([kind,value,label]) => `<div class="resource-tile resource-${kind}"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">${icons[kind]}</svg><div><div class="resource-number">${escapeHtml(value)}</div><div class="resource-caption">${label}</div></div></div>`).join('')}</div><p class="muted resource-note">Total submitted allocation${resources.partition ? ` · ${escapeHtml(resources.partition)}` : ''}${resources.gpu_type_from_partition ? ' · GPU model inferred from partition' : ''}. These are requested resources, not live utilization.</p>`;
+}
+
 function renderDetail(detail) {
   const item = detail.experiment;
   document.title = `REXS · ${item.name}`;
   document.getElementById('breadcrumb').innerHTML = '<button class="name-link" id="crumb-home">Experiments</button> / <strong>' + escapeHtml(item.name) + '</strong>';
   const canCancel = Boolean(item.job_id) && !terminalStatuses.has(item.status);
-  const tabs = [['overview','Overview'],['logs','Logs'],['configuration','Configuration'],['history','History']];
-  const overview = `<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
+  const tabs = [['overview','Overview'],['logs','Logs'],['configuration','Configuration'],['history','History'],['metrics','GPU metrics']];
+  const overview = `${renderResources(detail.resources)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
   const configuration = `<div class="config-layout"><div><h2 class="section-title">Experiment fields</h2><div class="field-card">${renderFields(detail.spec)}</div></div><div><h2 class="section-title">Executed YAML</h2><div class="code-wrap"><div class="code-actions"><button class="code-button" id="copy-spec">Copy</button><button class="code-button" id="download-spec">Download</button></div><pre class="spec-code" id="spec-code">${escapeHtml(item.spec_text || '(snapshot unavailable)')}</pre></div></div></div>`;
   app.innerHTML = `
     <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions"><button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>Cancel experiment</button></div></div>
@@ -367,6 +526,7 @@ function renderDetail(detail) {
       <div class="tab-content ${activeTab === 'logs' ? 'active' : ''}" data-content="logs"><h2 class="section-title">Replica logs</h2>${logPanel(detail.tasks)}</div>
       <div class="tab-content ${activeTab === 'configuration' ? 'active' : ''}" data-content="configuration">${configuration}</div>
       <div class="tab-content ${activeTab === 'history' ? 'active' : ''}" data-content="history"><h2 class="section-title">Status history</h2>${renderEvents(detail.events)}</div>
+      <div class="tab-content ${activeTab === 'metrics' ? 'active' : ''}" data-content="metrics"><h2 class="section-title">GPU metrics</h2>${renderGpuMetrics(detail.metrics, item.status)}</div>
     </div>`;
   document.getElementById('crumb-home').onclick = () => navigate('/');
   document.getElementById('back-button').onclick = () => navigate('/');

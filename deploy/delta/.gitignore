@@ -1,0 +1,6 @@
+images/
+logs/
+runs/
+cache/
+*.sbatch
+*.sqlite3*

@@ -1,0 +1,41 @@
+Bootstrap: docker
+From: registry:3
+Stage: distribution
+
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+Stage: services
+
+%files from distribution
+    /bin/registry /usr/local/bin/registry
+
+%files
+    ../literegistry/literegistry_podman_beaker /opt/podman-beaker-source
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates redis-server podman uidmap fuse-overlayfs slirp4netns
+    python -m venv /opt/literegistry
+    /opt/literegistry/bin/pip install --no-cache-dir 'literegistry==1.0.47' /opt/podman-beaker-source 'huggingface-hub>=0.27,<2'
+    mkdir -p /opt/mirror-assets
+    cp /opt/podman-beaker-source/src/literegistry_podman_beaker/assets/* /opt/mirror-assets/
+    /opt/literegistry/bin/pip freeze > /opt/python-packages.txt
+    dpkg-query -W > /opt/debian-packages.txt
+    rm -rf /var/lib/apt/lists/* /opt/podman-beaker-source
+
+%environment
+    export PATH=/opt/literegistry/bin:$PATH
+    export PYTHONUNBUFFERED=1
+    export OTEL_TRACES_EXPORTER=none
+    export PODMAN_STORAGE_DRIVER=vfs
+
+%test
+    /opt/literegistry/bin/python -c 'import literegistry, literegistry_podman_beaker, literegistry_podman_client'
+    redis-server --version
+    registry --version
+    podman --version
+
+%runscript
+    exec literegistry "$@"

@@ -1,0 +1,10 @@
+Bootstrap: localimage
+From: deploy/delta/images/services.sif
+
+%labels
+    service warmup
+    literegistry_version 1.0.47
+    podman_beaker_version 0.2.16
+
+%runscript
+    exec literegistry-podman-warm-podman "$@"
