@@ -91,15 +91,20 @@ def main():
     elif role == 'gateway':
         args = ['literegistry', 'gateway', *common, '--workers=4', '--timeout=300']
     elif role == 'mirror':
+        storage_root = Path(os.environ.get('REXS_MIRROR_STORAGE_ROOT', str(scratch / 'mirror')))
+        storage_root.mkdir(parents=True, exist_ok=True)
         args = ['python', '-m', 'literegistry.services.docker_mirror_server', *common, *advertise,
                 f'--instance_id=mirror-{rank}', '--allow_non_loopback=True',
-                f'--distribution_config={scratch}/distribution.yml', f'--storage_root={scratch}/mirror']
+                f'--distribution_config={scratch}/distribution.yml', f'--storage_root={storage_root}']
     elif role == 'podman':
         gateway = wait_endpoint(root, 'gateway')
+        max_sessions = int(os.environ.get('REXS_PODMAN_MAX_SESSIONS', '8'))
+        if max_sessions < 1:
+            raise ValueError('REXS_PODMAN_MAX_SESSIONS must be positive')
         configure_podman(scratch)
         args = ['literegistry', 'podman', *common, *advertise, '--allow_non_loopback=True',
                 f'--instance_id=podman-{rank}', f'--registry_mirror={gateway}', '--network=none',
-                '--max_sessions=8', '--session_memory=4g', '--session_pids_limit=2048',
+                f'--max_sessions={max_sessions}', '--session_memory=4g', '--session_pids_limit=2048',
                 '--session_idle_timeout=600', '--janitor_interval=30']
     else:
         raise ValueError(role)

@@ -186,9 +186,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .tab-content[data-content="metrics"] > .section-title { display:none; }
 .spark-cluster { margin:0 0 16px; }
 .spark-cluster h3 { font-size:12px; margin:0 0 6px; font-weight:650; }
-.spark-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(105px,1fr)); gap:4px; margin-bottom:6px; }
-.spark-row + .spark-row { padding-top:6px; border-top:1px dotted var(--line); }
-.spark-tile { position:relative; min-width:0; height:48px; padding:2px 3px 2px 17px; border:1px solid #e8edf2; border-radius:4px; }
+.spark-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(80px,1fr); gap:0; max-width:100%; overflow-x:auto; border:1px solid #e8edf2; border-radius:5px; }
+.spark-row .spark-tile + .spark-tile { border-left:1px solid #e8edf2; }
+.spark-tile { position:relative; min-width:0; height:48px; padding:2px 3px 2px 17px; border:0; border-radius:0; }
 .spark-number { position:absolute; top:5px; left:5px; font-size:10px; color:var(--muted); }
 .gpu-spark { display:block; width:100%; height:44px; }
 .spark-point { opacity:0; } .spark-point:hover,.spark-single { opacity:1; }
@@ -478,16 +478,16 @@ function renderGpuMetrics(metrics, status) {
   const memoryInPercent = metrics.gpus.every(g => (g.series?.memoryAllocated || []).length > 0);
   const getPoints = (gpu, kind) => kind === 'utilization' ? gpu.series?.utilization : memoryInPercent ? gpu.series?.memoryAllocated : (gpu.series?.memoryAllocatedBytes || []).map(p => [p[0],p[1]/1073741824]);
   const memoryMax = memoryInPercent ? 100 : metrics.gpus.flatMap(g => getPoints(g,'memory')).reduce((m,p) => Math.max(m,p[1]),1)*1.05;
-  return `${notes.length ? `<p class="muted">${escapeHtml(notes.join(' · '))}</p>` : ''}` + [['utilization','Utilization','#16804a'],['memory','Memory','#d97706']].map(([kind,label,color]) => `<section class="spark-cluster"><h3 style="color:${color}">${label}</h3>${metrics.sources.map(source => {
+  return `${notes.length ? `<p class="muted">${escapeHtml(notes.join(' · '))}</p>` : ''}` + [['utilization','Utilization','#16804a'],['memory','Memory','#d97706']].map(([kind,label,color]) => `<section class="spark-cluster"><h3 style="color:${color}">${label}</h3><div class="spark-row" aria-label="${label} across all GPUs">${metrics.sources.map(source => {
     const gpus = metrics.gpus.filter(g => g.source_id === source.id);
     if (!gpus.length) return '';
-    return `<div class="spark-row" aria-label="${escapeHtml(source.label)}">${gpus.map(gpu => {
+    return gpus.map(gpu => {
       const stamp = Math.max(...Object.values(gpu.timestamps));
       const stale = !terminalStatuses.has(status) && Date.now()/1000-stamp > 120;
       const detail = `${source.label}\nGPU ${gpu.gpu} · ${label}\n${stale ? 'Stale sample · ' : ''}${new Date(stamp*1000).toLocaleString()}${source.error ? '\n'+source.error : ''}`;
       return `<div class="spark-tile${stale || source.error ? ' spark-warning' : ''}" title="${escapeHtml(detail)}"><span class="spark-number">${escapeHtml(gpu.gpu)}</span>${gpuSparkline(getPoints(gpu,kind),color,kind === 'utilization' ? 100 : memoryMax,extent,kind === 'utilization' || memoryInPercent ? '%' : 'GiB')}</div>`;
-    }).join('')}</div>`;
-  }).join('')}</section>`).join('');
+    }).join('');
+  }).join('')}</div></section>`).join('');
 }
 
 function renderResources(resources, compact = false) {

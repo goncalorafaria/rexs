@@ -287,8 +287,11 @@ def test_bundled_dataset_does_not_mask_image_contents():
     assert not result.warnings
 
 
-def test_joint_gpu_cpu_replicas_share_one_allocation(tmp_path):
-    profile = SlurmProfile(tasks_per_node=9, completion_task="rl", images={"runtime": "/image.sif"})
+@pytest.mark.parametrize("shared_pool", [None, 96])
+def test_joint_gpu_cpu_replicas_share_one_allocation(tmp_path, shared_pool):
+    profile = SlurmProfile(
+        tasks_per_node=9, completion_task="rl", shared_cpus_per_node=shared_pool, images={"runtime": "/image.sif"}
+    )
     tasks = [
         {
             "name": "podman",
@@ -325,7 +328,15 @@ def test_joint_gpu_cpu_replicas_share_one_allocation(tmp_path):
     ]
     result = compile_experiment({"version": "v2", "tasks": tasks}, profile=profile)
     assert result.nodes == 1 and result.tasks == 9 and not result.warnings
-    assert "#SBATCH --cpus-per-task=80" in result.script
+    assert f"#SBATCH --cpus-per-task={shared_pool or 80}" in result.script
+    if shared_pool:
+        assert result.script.count("--overlap") == 9
+        assert result.script.count("--cpu-bind=none") == 9
+        assert result.script.count("--cpus-per-task=96") == 10
+        assert "--exclusive" not in result.script
+    else:
+        assert result.script.count("--exclusive") == 9
+        assert "--overlap" not in result.script
     assert "#SBATCH --gpus-per-node=8" in result.script
     assert "#SBATCH --mem=560G" in result.script
     assert result.script.count("--gres=none") == 8
@@ -355,3 +366,18 @@ REXS_PIDS=()
     script += "\n".join(_supervisor("rl"))
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=5, check=False)
     assert result.returncode == expected, result.stderr
+
+
+@pytest.mark.parametrize("pool", [0, -1, True, "96"])
+def test_shared_cpu_pool_rejects_invalid_size(pool):
+    from rexs.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="positive integer"):
+        SlurmProfile.from_mapping({"shared_cpus_per_node": pool, "completion_task": "rl"})
+
+
+def test_shared_cpu_pool_requires_joint_lifecycle():
+    from rexs.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="requires completion_task"):
+        SlurmProfile.from_mapping({"shared_cpus_per_node": 96})
