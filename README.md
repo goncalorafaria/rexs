@@ -1,7 +1,6 @@
 <div align="center">
   <img src="src/rexs/static/rexs-logo.png" width="160" alt="REXS green T-rex badge">
-  <h1>REXS</h1>
-  <p><strong>Reproducible Experiments, eXecuted on Slurm.</strong></p>
+  <h1>[R]eproducible [E]xperiments, e[X]ecuted on [S]lurm.</h1>
   <p>Run the Beaker experiment configurations you already have on Slurm and Apptainer.</p>
 
   [![CI](https://github.com/goncalorafaria/rexs/actions/workflows/ci.yml/badge.svg)](https://github.com/goncalorafaria/rexs/actions/workflows/ci.yml)
