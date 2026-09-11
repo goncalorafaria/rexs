@@ -330,10 +330,10 @@ def test_joint_gpu_cpu_replicas_share_one_allocation(tmp_path, shared_pool):
     assert result.nodes == 1 and result.tasks == 9 and not result.warnings
     assert f"#SBATCH --cpus-per-task={shared_pool or 80}" in result.script
     if shared_pool:
-        assert result.script.count("--overlap") == 9
+        assert result.script.count("--overlap") == 8
         assert result.script.count("--cpu-bind=none") == 9
-        assert result.script.count("--cpus-per-task=96") == 10
-        assert "--exclusive" not in result.script
+        assert result.script.count("--cpus-per-task=96") == 9
+        assert result.script.count("--exclusive") == 1
     else:
         assert result.script.count("--exclusive") == 9
         assert "--overlap" not in result.script

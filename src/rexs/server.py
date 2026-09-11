@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hmac
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -9,6 +13,7 @@ import threading
 import time
 from dataclasses import asdict
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
@@ -17,7 +22,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
+from rexs.auth import USERNAME, dashboard_password
 from rexs.controller import Controller
+from rexs.links import wandb_links, wandb_offline
 from rexs.metrics import MetricsCollector
 from rexs.resources import resource_summary
 from rexs.state import default_db_path
@@ -143,7 +150,11 @@ class RexsServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], controller: Controller, poll_interval: float) -> None:
+        password = dashboard_password(controller.store.path.parent)
+        self.expected_credentials = f"{USERNAME}:{password}".encode()
         super().__init__(address, RexsHandler)
+        self.session_token = secrets.token_urlsafe(32)
+        self.session_cookie = f"rexs_session_{self.server_port}"
         self.controller = controller
         self.metrics = MetricsCollector(controller.store)
         self.poll_interval = poll_interval
@@ -154,6 +165,8 @@ class RexsHandler(BaseHTTPRequestHandler):
     server: RexsServer
 
     def do_GET(self) -> None:
+        if not self._authenticated():
+            return
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
@@ -206,6 +219,13 @@ class RexsHandler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if not self._authenticated():
+            return
+        # Browsers cannot attach this header cross-origin without a CORS preflight.
+        # Do not permit form posts to use cached Basic credentials to cancel jobs.
+        if self.headers.get("X-REXS-Request") != "1":
+            self._json({"error": "X-REXS-Request: 1 is required"}, status=HTTPStatus.FORBIDDEN)
+            return
         path = unquote(urlparse(self.path).path)
         try:
             if path == "/api/refresh":
@@ -228,6 +248,56 @@ class RexsHandler(BaseHTTPRequestHandler):
             detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
             self._json({"error": detail}, status=HTTPStatus.CONFLICT)
 
+    def end_headers(self) -> None:
+        if getattr(self, "_set_session_cookie", False):
+            self.send_header("Set-Cookie", f"{self.server.session_cookie}={self.server.session_token}; Path=/; HttpOnly; SameSite=Strict")
+            self._set_session_cookie = False
+        super().end_headers()
+
+    def _authenticated(self) -> bool:
+        self._set_session_cookie = False
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+            session = cookie.get(self.server.session_cookie)
+            if session and hmac.compare_digest(session.value.encode(), self.server.session_token.encode()):
+                return True
+        except CookieError:
+            pass
+        authorization = self.headers.get("Authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        credentials = b""
+        if scheme.lower() == "basic":
+            try:
+                credentials = base64.b64decode(token, validate=True)
+            except (ValueError, binascii.Error):
+                pass
+        if hmac.compare_digest(credentials, self.server.expected_credentials):
+            self._set_session_cookie = True
+            return True
+        is_page = self.command == "GET" and not urlparse(self.path).path.startswith("/api/")
+        payload = b"Authentication required.\n"
+        if is_page:
+            payload = b'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Rex</title></head>
+<body style="font:16px system-ui;max-width:360px;margin:15vh auto;padding:24px">
+<h1>Sign in to Rex</h1><form id="login"><label>Dashboard password<br>
+<input id="password" type="password" autocomplete="current-password" required autofocus style="padding:10px;margin:12px 0;width:90%"></label>
+<button type="submit">Sign in</button><p id="error" role="alert"></p></form>
+<script>document.getElementById('login').onsubmit=async e=>{e.preventDefault();
+const error=document.getElementById('error');error.textContent='';
+try{const bytes=new TextEncoder().encode('rexs:'+document.getElementById('password').value);
+const response=await fetch(location.pathname,{headers:{Authorization:'Basic '+btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''))},cache:'no-store'});
+if(response.ok)location.reload();else error.textContent='Sign-in failed. Check your password.';
+}catch(e){error.textContent='Cannot reach Rex. Reopen the forwarded connection.';}};</script></body></html>'''
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="REXS", charset="UTF-8"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Type", "text/html; charset=utf-8" if is_page else "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+        return False
+
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(f"[rexs-server] {self.address_string()} {fmt % args}\n")
 
@@ -236,11 +306,16 @@ class RexsHandler(BaseHTTPRequestHandler):
         line_count = int(params.get("lines", ["200"])[0])
         experiment = self.server.controller.store.get(identifier)
         spec = yaml.safe_load(experiment.spec_text) if experiment.spec_text else {}
+        tasks = self.server.controller.logs(identifier, lines=line_count)
         return {
+            "wandb_links": self.server.controller.store.remember_wandb_links(
+                experiment.id, wandb_links(experiment.spec_text, tasks)
+            ),
+            "wandb_offline": wandb_offline(tasks),
             "experiment": experiment.as_dict(include_spec=True),
             "spec": spec,
             "resources": resource_summary(experiment),
-            "tasks": self.server.controller.logs(identifier, lines=line_count),
+            "tasks": tasks,
             "events": self.server.controller.store.events(identifier),
             "metrics": self.server.metrics.snapshot(identifier),
         }
@@ -248,6 +323,7 @@ class RexsHandler(BaseHTTPRequestHandler):
     def _json(self, value: Any, *, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = json.dumps(value, indent=2, default=str).encode()
         self.send_response(status)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -256,6 +332,7 @@ class RexsHandler(BaseHTTPRequestHandler):
     def _text(self, value: str, *, content_type: str) -> None:
         payload = value.encode()
         self.send_response(HTTPStatus.OK)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -275,6 +352,7 @@ def serve(
     poller.start()
     threading.Thread(target=_collect_metrics, args=(server,), daemon=True, name="rexs-metrics").start()
     print(f"REXS server listening on http://{host}:{port} (db: {controller.store.path})")
+    print(f"Dashboard login: {USERNAME}; password from REXS_SERVER_PASSWORD or {controller.store.path.parent / 'server.password'}")
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
@@ -363,6 +441,13 @@ def _collect_metrics(server: RexsServer) -> None:
         for experiment in experiments:
             if server.stop_event.is_set():
                 return
+            try:
+                tasks = server.controller.logs(experiment.id, lines=200)
+                server.controller.store.remember_wandb_links(
+                    experiment.id, wandb_links(experiment.spec_text, tasks)
+                )
+            except Exception as exc:  # noqa: BLE001 - link capture is optional
+                print(f"REXS W&B link capture failed: {exc}", file=sys.stderr)
             try:
                 server.metrics.collect(experiment.id)
             except Exception as exc:  # noqa: BLE001 - optional capture must not affect jobs

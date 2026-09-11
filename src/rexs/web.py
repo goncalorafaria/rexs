@@ -186,9 +186,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .tab-content[data-content="metrics"] > .section-title { display:none; }
 .spark-cluster { margin:0 0 16px; }
 .spark-cluster h3 { font-size:12px; margin:0 0 6px; font-weight:650; }
-.spark-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(80px,1fr); gap:0; max-width:100%; overflow-x:auto; border:1px solid #e8edf2; border-radius:5px; }
+.spark-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:0; width:100%; min-width:0; max-width:100%; border:1px solid #e8edf2; border-radius:5px; }
 .spark-row .spark-tile + .spark-tile { border-left:1px solid #e8edf2; }
-.spark-tile { position:relative; min-width:0; height:48px; padding:2px 3px 2px 17px; border:0; border-radius:0; }
+.spark-tile { position:relative; min-width:0; height:48px; padding:2px 0; border:0; border-radius:0; }
 .spark-number { position:absolute; top:5px; left:5px; font-size:10px; color:var(--muted); }
 .gpu-spark { display:block; width:100%; height:44px; }
 .spark-point { opacity:0; } .spark-point:hover,.spark-single { opacity:1; }
@@ -206,10 +206,9 @@ tbody tr:last-child td { border-bottom: 0; }
     </div>
     <nav aria-label="Main navigation">
       <div class="nav-label">Experiments</div>
-      <button class="nav-item active" data-nav-filter="all"><span class="nav-icon">▦</span><span class="nav-text">All experiments</span><span class="nav-count" id="count-all">0</span></button>
-      <button class="nav-item" data-nav-filter="running"><span class="nav-icon">▶</span><span class="nav-text">Running</span><span class="nav-count" id="count-running">0</span></button>
-      <button class="nav-item" data-nav-filter="failed"><span class="nav-icon">!</span><span class="nav-text">Failed</span><span class="nav-count" id="count-failed">0</span></button>
-      <button class="nav-item" data-nav-filter="cancelled"><span class="nav-icon">⊘</span><span class="nav-text">Canceled</span><span class="nav-count" id="count-cancelled">0</span></button>
+      <button class="nav-item" data-nav-filter="all"><span class="nav-icon">▦</span><span class="nav-text">All experiments</span><span class="nav-count" id="count-all">0</span></button>
+      <button class="nav-item active" data-nav-filter="running"><span class="nav-icon">▶</span><span class="nav-text">Running</span><span class="nav-count" id="count-running">0</span></button>
+      <button class="nav-item" data-nav-filter="failed"><span class="nav-icon">!</span><span class="nav-text">Failed and canceled</span><span class="nav-count" id="count-failed">0</span></button>
     </nav>
     <div class="side-note"><strong>Slurm is authoritative</strong>REXS records observed state in SQLite.</div>
   </aside>
@@ -225,16 +224,24 @@ tbody tr:last-child td { border-bottom: 0; }
   </main>
 </div>
 <script>
+// Use the authenticated session for relative API URLs after a link login.
+if (location.username || location.password || new URL(location.href).username) {
+  const cleanUrl = new URL(location.href);
+  cleanUrl.username = "";
+  cleanUrl.password = "";
+  history.replaceState({}, "", cleanUrl.href);
+}
 const app = document.getElementById('app');
 const errorBanner = document.getElementById('error-banner');
 const terminalStatuses = new Set(['COMPLETED','FAILED','CANCELLED','TIMEOUT','NODE_FAIL','OUT_OF_MEMORY','PREEMPTED','SUBMISSION_FAILED']);
 const failedStatuses = new Set(['FAILED','TIMEOUT','NODE_FAIL','OUT_OF_MEMORY','PREEMPTED','SUBMISSION_FAILED']);
 const pendingStatuses = new Set(['GENERATED','SUBMITTED','PENDING','SUSPENDED','UNKNOWN']);
 let experiments = [];
-let activeFilter = 'all';
+let activeFilter = 'running';
 let activeSearch = '';
 let activeTab = 'overview';
 let selectedLog = null;
+const logScrollPositions = new Map();
 let logLineCount = 200;
 let refreshTimer = null;
 
@@ -331,7 +338,10 @@ function setError(message) {
   errorBanner.classList.toggle('visible', Boolean(message));
 }
 async function request(url, options) {
-  const response = await fetch(url, options);
+  const requestUrl = new URL(url, location.origin);
+  requestUrl.username = "";
+  requestUrl.password = "";
+  const response = await fetch(requestUrl.href, {...options, credentials: "same-origin", headers: {...options?.headers, "X-REXS-Request": "1"}});
   const value = await response.json().catch(() => ({error: response.statusText}));
   if (!response.ok) throw new Error(value.error || `Request failed (${response.status})`);
   return value;
@@ -342,19 +352,15 @@ function navigate(path) {
 }
 function filterMatches(item, filter) {
   if (filter === 'all') return true;
-  if (filter === 'running') return item.status === 'RUNNING';
-  if (filter === 'pending') return pendingStatuses.has(item.status);
-  if (filter === 'completed') return item.status === 'COMPLETED';
-  if (filter === 'failed') return failedStatuses.has(item.status);
-  if (filter === 'cancelled') return item.status === 'CANCELLED';
+  if (filter === 'running') return item.status === 'RUNNING' || pendingStatuses.has(item.status);
+  if (filter === 'failed') return failedStatuses.has(item.status) || item.status === 'CANCELLED';
   return true;
 }
 function updateCounts() {
   const counts = {
     all: experiments.length,
-    running: experiments.filter(item => item.status === 'RUNNING').length,
-    failed: experiments.filter(item => failedStatuses.has(item.status)).length,
-    cancelled: experiments.filter(item => item.status === 'CANCELLED').length,
+    running: experiments.filter(item => filterMatches(item, 'running')).length,
+    failed: experiments.filter(item => filterMatches(item, 'failed')).length,
   };
   Object.entries(counts).forEach(([key, value]) => {
     const target = document.getElementById(`count-${key}`);
@@ -397,7 +403,7 @@ function renderList() {
     return [item.name, item.id, item.job_id, item.status].some(value => String(value || '').toLowerCase().includes(query));
   });
   const chips = [
-    ['all','All'], ['running','Running'], ['pending','Queued'], ['completed','Succeeded'], ['failed','Failed'], ['cancelled','Canceled'],
+    ['running','Running'], ['failed','Failed and canceled'], ['all','All'],
   ].map(([key,label]) => `<button class="filter-chip ${activeFilter === key ? 'active' : ''}" data-filter="${key}">${label}</button>`).join('');
   const body = rows.length ? rows.map(item => `
     <tr>
@@ -426,11 +432,11 @@ function renderList() {
 function syncNavigationFilter() {
   document.querySelectorAll('[data-nav-filter]').forEach(item => item.classList.toggle('active', item.dataset.navFilter === activeFilter));
 }
-function metadataCards(item, taskCount) {
+function metadataCards(item, taskCount, wandbLinks = [], wandbOffline = false) {
   const values = [
-    ['REXS ID', item.id], ['Slurm job', item.job_id || 'Not submitted'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
+    ['REXS ID', item.id], ['Slurm job', item.job_id || 'Not submitted'], ['W&B', wandbOffline ? 'Offline · no cloud link' : 'No run link captured'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
   ];
-  return values.map(([label,value]) => `<div class="meta-card"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value ${label.includes('ID') || label.includes('job') ? 'mono' : ''}" title="${escapeHtml(value)}">${escapeHtml(value)}</div></div>`).join('');
+  return values.map(([label,value]) => `<div class="meta-card"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value ${label.includes('ID') || label.includes('job') ? 'mono' : ''}" title="${escapeHtml(value)}">${label === 'W&B' && wandbLinks.length ? wandbLinks.map((url, index) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open run${wandbLinks.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join(' · ') : escapeHtml(value)}</div></div>`).join('');
 }
 function renderFields(value) {
   if (!value || typeof value !== 'object') return `<div class="field-row"><div class="field-key">Value</div><div class="field-value mono">${escapeHtml(JSON.stringify(value))}</div></div>`;
@@ -467,7 +473,7 @@ function gpuSparkline(points, color, maximum, extent, unit) {
   const y = v => 40-Math.max(0,Math.min(maximum,v))/maximum*36;
   const path = points.map((p,i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(2)},${y(p[1]).toFixed(2)}`).join(' ');
   const area = `${path} L${x(points[points.length-1][0])},40 L${x(points[0][0])},40 Z`;
-  return `<svg class="gpu-spark" viewBox="0 0 116 44" role="img" aria-label="${escapeHtml(unit)} over time"><path d="${area}" fill="${color}" opacity=".18"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5"/>${points.map(p => `<circle cx="${x(p[0])}" cy="${y(p[1])}" r="3" fill="${color}" class="spark-point${points.length === 1 ? ' spark-single' : ''}"><title>${escapeHtml(new Date(p[0]*1000).toLocaleString())} · ${p[1].toFixed(1)} ${escapeHtml(unit)}</title></circle>`).join('')}</svg>`;
+  return `<svg class="gpu-spark" viewBox="0 0 116 44" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(unit)} over time"><path d="${area}" fill="${color}" opacity=".18"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5"/>${points.map(p => `<circle cx="${x(p[0])}" cy="${y(p[1])}" r="3" fill="${color}" class="spark-point${points.length === 1 ? ' spark-single' : ''}"><title>${escapeHtml(new Date(p[0]*1000).toLocaleString())} · ${p[1].toFixed(1)} ${escapeHtml(unit)}</title></circle>`).join('')}</svg>`;
 }
 
 function renderGpuMetrics(metrics, status) {
@@ -511,6 +517,15 @@ function renderResources(resources, compact = false) {
 }
 
 function renderDetail(detail) {
+  // Capture the old element before replacing the detail page, including tab switches.
+  const previousLog = app.querySelector('.log-output');
+  if (previousLog?.clientHeight && previousLog.dataset.scrollKey) {
+    logScrollPositions.set(previousLog.dataset.scrollKey, {
+      top: previousLog.scrollTop,
+      left: previousLog.scrollLeft,
+      follow: previousLog.scrollHeight - previousLog.clientHeight - previousLog.scrollTop <= 24,
+    });
+  }
   const item = detail.experiment;
   document.title = `REXS · ${item.name}`;
   document.getElementById('breadcrumb').innerHTML = '<button class="name-link" id="crumb-home">Experiments</button> / <strong>' + escapeHtml(item.name) + '</strong>';
@@ -519,8 +534,8 @@ function renderDetail(detail) {
   const overview = `${renderResources(detail.resources)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
   const configuration = `<div class="config-layout"><div><h2 class="section-title">Experiment fields</h2><div class="field-card">${renderFields(detail.spec)}</div></div><div><h2 class="section-title">Executed YAML</h2><div class="code-wrap"><div class="code-actions"><button class="code-button" id="copy-spec">Copy</button><button class="code-button" id="download-spec">Download</button></div><pre class="spec-code" id="spec-code">${escapeHtml(item.spec_text || '(snapshot unavailable)')}</pre></div></div></div>`;
   app.innerHTML = `
-    <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions"><button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>Cancel experiment</button></div></div>
-    <div class="meta-grid">${metadataCards(item, detail.tasks.length)}</div>
+    <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions">${(detail.wandb_links || []).map((url, index, links) => `<a class="button" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">W&amp;B${links.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join('')}<button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>Cancel experiment</button></div></div>
+    <div class="meta-grid">${metadataCards(item, detail.tasks.length, detail.wandb_links || [], detail.wandb_offline)}</div>
     <div class="panel"><div class="tabs">${tabs.map(([key,label]) => `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${label}${key === 'logs' ? ` (${detail.tasks.length})` : ''}</button>`).join('')}</div>
       <div class="tab-content ${activeTab === 'overview' ? 'active' : ''}" data-content="overview">${overview}</div>
       <div class="tab-content ${activeTab === 'logs' ? 'active' : ''}" data-content="logs"><h2 class="section-title">Replica logs</h2>${logPanel(detail.tasks)}</div>
@@ -528,6 +543,16 @@ function renderDetail(detail) {
       <div class="tab-content ${activeTab === 'history' ? 'active' : ''}" data-content="history"><h2 class="section-title">Status history</h2>${renderEvents(detail.events)}</div>
       <div class="tab-content ${activeTab === 'metrics' ? 'active' : ''}" data-content="metrics"><h2 class="section-title">GPU metrics</h2>${renderGpuMetrics(detail.metrics, item.status)}</div>
     </div>`;
+  const logOutput = app.querySelector('.log-output');
+  if (logOutput) {
+    const key = JSON.stringify([item.id, selectedLog]);
+    logOutput.dataset.scrollKey = key;
+    if (activeTab === 'logs') {
+      const position = logScrollPositions.get(key);
+      logOutput.scrollTop = !position || position.follow ? logOutput.scrollHeight : position.top;
+      logOutput.scrollLeft = position?.left || 0;
+    }
+  }
   document.getElementById('crumb-home').onclick = () => navigate('/');
   document.getElementById('back-button').onclick = () => navigate('/');
   document.getElementById('detail-refresh').onclick = async () => {

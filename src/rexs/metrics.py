@@ -222,8 +222,23 @@ class MetricsCollector:
                 ON s.id=g.source_id WHERE s.experiment_id=? ORDER BY g.source_id,CAST(g.gpu AS INTEGER)""",
                 (experiment.id,),
             ).fetchall()
+        # Prime-RL can retain the same run below both a replica's wandb/
+        # and run_default/wandb/. Keep the most complete captured copy.
+        # The replica prefix remains part of the key so nodes stay distinct.
+        unique_sources = {}
+        for source in sources:
+            key = source["label"].replace("/run_default/wandb/", "/wandb/")
+            previous = unique_sources.get(key)
+            if previous is None or source["records"] > previous["records"]:
+                unique_sources[key] = source
+        sources = [source for source in sources if source["label"] == unique_sources[
+            source["label"].replace("/run_default/wandb/", "/wandb/")
+        ]["label"]]
+        visible_sources = {source["id"] for source in sources}
         grouped = {}
         for row in rows:
+            if row["source_id"] not in visible_sources:
+                continue
             card = grouped.setdefault(
                 (row["source_id"], row["gpu"]), {"source_id": row["source_id"], "gpu": row["gpu"]}
             )

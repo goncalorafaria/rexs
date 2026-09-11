@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import subprocess
@@ -120,21 +121,23 @@ def test_http_api_lists_tracked_experiments(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     record = _record(store, tmp_path)
     server = RexsServer(("127.0.0.1", 0), Controller(store.path), poll_interval=60)
+    headers = {"Authorization": "Basic " + base64.b64encode(server.expected_credentials).decode(),
+               "X-REXS-Request": "1"}
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address
-        with urlopen(f"http://{host}:{port}/api/experiments", timeout=5) as response:
+        with urlopen(Request(f"http://{host}:{port}/api/experiments", headers=headers), timeout=5) as response:
             payload = json.load(response)
         assert payload[0]["id"] == record.id
         assert payload[0]["status"] == "GENERATED"
         assert payload[0]["replica_count"] == 3
         assert "spec_text" not in payload[0]
-        with urlopen(f"http://{host}:{port}/api/experiments/{record.id}", timeout=5) as response:
+        with urlopen(Request(f"http://{host}:{port}/api/experiments/{record.id}", headers=headers), timeout=5) as response:
             detail = json.load(response)
         assert detail["experiment"]["spec_text"] == "version: v2\ntasks: []\n"
         assert detail["spec"] == {"version": "v2", "tasks": []}
-        with urlopen(f"http://{host}:{port}/", timeout=5) as response:
+        with urlopen(Request(f"http://{host}:{port}/", headers=headers), timeout=5) as response:
             dashboard = response.read().decode()
         assert "Experiment history" in dashboard
         assert "Cancel experiment" in dashboard
@@ -157,17 +160,19 @@ def test_http_api_filters_and_cancels_experiments(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     server = RexsServer(("127.0.0.1", 0), Controller(store.path, runner=runner), poll_interval=60)
+    headers = {"Authorization": "Basic " + base64.b64encode(server.expected_credentials).decode(),
+               "X-REXS-Request": "1"}
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address
-        with urlopen(f"http://{host}:{port}/api/experiments?status=RUNNING", timeout=5) as response:
+        with urlopen(Request(f"http://{host}:{port}/api/experiments?status=RUNNING", headers=headers), timeout=5) as response:
             payload = json.load(response)
         assert [item["id"] for item in payload] == [record.id]
 
         request = Request(
             f"http://{host}:{port}/api/experiments/{record.id}/cancel",
-            method="POST",
+            method="POST", headers=headers,
         )
         with urlopen(request, timeout=5) as response:
             cancelled = json.load(response)
@@ -288,3 +293,20 @@ def test_start_estimates_use_utc_and_clear_unavailable_values(tmp_path):
     assert store.get(record.id).estimated_start_at == "2026-09-10T06:38:07+00:00"
     controller.refresh_start_estimates()
     assert store.get(record.id).estimated_start_at is None
+
+
+def test_experiments_defaults_to_active_before_limit(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite3"
+    store = StateStore(db)
+    for index, status in enumerate(("SUBMITTED", "PENDING", "RUNNING", "FAILED", "CANCELLED", "COMPLETED")):
+        record = _record(store, tmp_path)
+        with store.connect() as connection:
+            connection.execute(
+                "UPDATE experiments SET status = ?, created_at = ? WHERE id = ?",
+                (status, f"2026-01-01T00:00:0{index}", record.id),
+            )
+    cli = Rexs()
+    options = {"db": str(db), "refresh": False, "details": True}
+    assert [item["status"] for item in cli.experiments(limit=2, **options)] == ["RUNNING", "PENDING"]
+    assert len(cli.experiments(all=True, **options)) == 6
+    assert [item["status"] for item in cli.experiments(status="failed", **options)] == ["FAILED"]

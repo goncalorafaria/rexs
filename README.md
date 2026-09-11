@@ -78,7 +78,8 @@ Submit and inspect the run:
 
 ```bash
 rexs submit experiment.yaml --profile profile.yaml --name my-run --strict
-rexs experiments
+rexs experiments                 # queued and running only
+rexs experiments --all           # include finished experiments
 rexs status 123456
 rexs logs 123456 --task=trainer --replica=0
 rexs cancel 123456
@@ -91,6 +92,23 @@ rexs server --host=127.0.0.1 --port=8765 --daemon
 # Open http://127.0.0.1:8765
 rexs server_stop
 ```
+
+The dashboard and all API routes require HTTP Basic authentication by default.
+Use username `rexs`. On first start, REXS generates a unique password and saves it
+with owner-only permissions in `~/.local/state/rexs/server.password` (beside a
+custom state database when `--db` is used). Read it with:
+
+```bash
+cat ~/.local/state/rexs/server.password
+```
+
+The saved password persists across restarts. Set `REXS_SERVER_PASSWORD` in the
+server's environment to override it; empty passwords are rejected. The password
+is never included in server URLs, process arguments, or logs. After changing a
+password, restart the server and sign in again. Authenticated API POST requests
+must also send `X-REXS-Request: 1`; the dashboard adds this automatically.
+Keep the loopback binding and access it through SSH port forwarding. Basic
+authentication should use HTTPS if exposing the server beyond that tunnel.
 
 The dashboard shows searchable experiment history, status filters, submitted
 YAML, state transitions, task-level logs, and guarded cancellation.
@@ -232,3 +250,7 @@ reproducible Beaker-to-Slurm execution rather than a fixed service composition.
 ## License
 
 [MIT](LICENSE)
+
+### GPU isolation with shared CPUs
+
+With `shared_cpus_per_node`, CPU-only service steps use `--overlap --gres=none`. GPU steps use `--exclusive --exact --gpus-per-task=N --gpus-per-node=N` and their own CPU count, allowing Slurm to allocate disjoint GPUs to concurrent model replicas. GPU steps must fit together within the shared CPU budget. The container wrapper must preserve Slurm's `CUDA_VISIBLE_DEVICES` through `APPTAINERENV_CUDA_VISIBLE_DEVICES` when using `--cleanenv`.

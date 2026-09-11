@@ -1,4 +1,5 @@
 """Warm the actual mirror, verify a Podman session, keep the service allocation alive."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -26,18 +27,25 @@ def post(uri, path, payload):
         return json.load(response)
 
 mirrors = [endpoint('mirror', '/v2/', rank) for rank in range(int(os.environ['REXS_MIRROR_REPLICAS']))]
-images, sources = discover('/training/deploy/podman-colocated/rl.toml', '/training')
+images, sources = discover(os.environ.get('REXS_WARMUP_CONFIG', '/training/deploy/podman-colocated/rl.toml'), '/training')
 Path('/results/images.txt').write_text('\n'.join(images) + '\n')
 Path('/results/datasets.json').write_text(json.dumps(sources, indent=2) + '\n')
 print(json.dumps({'datasets': sources, 'unique_images': images}), flush=True)
 # Separate processes prevent LiteRegistry's global blob-dedup cache from
 # skipping layers on the second and subsequent mirror servers.
-for mirror in mirrors:
-    print(f'Warming mirror {mirror}', flush=True)
-    subprocess.run([sys.executable, '-m', 'literegistry.services.docker_mirror_warmup',
-                    f'--mirror={mirror}', '--images_file=/results/images.txt',
-                    '--workers=8', '--platform=linux/amd64', '--verbose=True'],
-                   check=True, timeout=1800)
+def warm_mirror(item):
+    rank, mirror = item
+    log_path = Path(f'/results/mirror-{rank}-warmup.log')
+    print(f'Warming mirror {rank}: {mirror}; log={log_path}', flush=True)
+    with log_path.open('w') as log:
+        subprocess.run([sys.executable, '-u', '-m', 'literegistry.services.docker_mirror_warmup',
+                        f'--mirror={mirror}', '--images_file=/results/images.txt',
+                        '--workers=8', '--platform=linux/amd64', '--verbose=True'],
+                       check=True, timeout=3000, stdout=log, stderr=subprocess.STDOUT)
+    print(f'Mirror {rank} warmup passed: {len(images)} images', flush=True)
+
+with ThreadPoolExecutor(max_workers=len(mirrors)) as pool:
+    list(pool.map(warm_mirror, enumerate(mirrors)))
 podman = endpoint('podman', '/health')
 session = post(podman, '/handshake', {'image':images[0], 'client_id':'mirror-warmup-check'})
 cid = session['container_id']
