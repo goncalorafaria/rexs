@@ -21,6 +21,37 @@ It focuses deliberately on the Beaker features exercised by `datadev` and
 LiteRegistry. Unsupported fields produce warnings; `--strict` promotes any
 lossy translation to an error before submission.
 
+## REXS in operation
+
+Screenshots from a live REXS dashboard on Delta. At capture time, one experiment
+was queued; the other views show recorded runs and their actual final statuses.
+
+**Experiment history** — browse jobs, requested resources, replicas, and outcomes.
+
+![REXS experiment history with queued, completed, canceled, and timed-out Slurm jobs](docs/assets/screenshots/02-experiment-history.png)
+
+**Eight-GPU metrics** — retained utilization and memory charts from an H200 run
+that reached its time limit.
+
+![REXS dashboard showing recorded utilization and memory charts for eight GPUs](docs/assets/screenshots/04-eight-gpu-metrics.png)
+
+<details>
+<summary>More screenshots: current queue, resource overview, and completed-run logs</summary>
+
+**Current queue** — a pending experiment requesting eight H200 GPUs.
+
+![REXS active experiment view showing a queued eight-GPU job](docs/assets/screenshots/01-current-queue.png)
+
+**Experiment overview** — requested resources and individual task replicas.
+
+![REXS experiment overview showing resource requests and task replica logs](docs/assets/screenshots/03-experiment-overview.png)
+
+**Completed-run logs** — output from a successful LiteRegistry cluster smoke test.
+
+![REXS completed experiment showing successful service checks in its replica log](docs/assets/screenshots/05-completed-run-logs.png)
+
+</details>
+
 ## How it works
 
 ```mermaid
