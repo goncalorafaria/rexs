@@ -150,6 +150,15 @@ def compile_experiment(
             raise TranslationError("completion_task requires explicit memory for each task")
         cpus = sum(task.cpu_count for task in replicas)
         gpus = sum(task.gpu_count for task in replicas)
+    if profile.shared_cpus_per_node is not None:
+        pool = profile.shared_cpus_per_node
+        if isinstance(pool, bool) or not isinstance(pool, int) or pool < 1:
+            raise TranslationError("shared_cpus_per_node must be a positive integer")
+        if not profile.completion_task or nodes != 1:
+            raise TranslationError("shared_cpus_per_node requires a single-node completion_task allocation")
+        if any(task.cpu_count > pool for task in plans):
+            raise TranslationError("task CPU request exceeds shared_cpus_per_node")
+        cpus = pool
     safe_job_name = _safe(job_name)[:128] or "beaker-experiment"
     lines = _headers(
         safe_job_name,
@@ -531,12 +540,16 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
                 "srun",
                 "--nodes=1",
                 "--ntasks=1",
-                "--exclusive",
+                "--overlap" if profile.shared_cpus_per_node is not None and not task.gpu_count else "--exclusive",
                 "--exact",
-                f"--cpus-per-task={task.cpu_count}",
+                f"--cpus-per-task={(profile.shared_cpus_per_node or task.cpu_count) if not task.gpu_count else task.cpu_count}",
             ]
+            if profile.shared_cpus_per_node is not None:
+                srun_args.append("--cpu-bind=none")
             if task.gpu_count:
-                srun_args.append(f"--gpus-per-task={task.gpu_count}")
+                # Exclusive GPU steps let Slurm allocate disjoint GRES. Only
+                # CPU-only service steps overlap, explicitly requesting no GRES.
+                srun_args.extend((f"--gpus-per-task={task.gpu_count}", f"--gpus-per-node={task.gpu_count}"))
             elif profile.tasks_per_node > 1:
                 # A site may reserve a GPU in SBATCH for CPU-only services.
                 # Do not let concurrent steps inherit that exclusive GRES.
@@ -549,7 +562,7 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
                     (
                         "    "
                         f'{_shell_array(srun_args)} --nodelist="$node" '
-                        '"$REXS_APPTAINER" "${APPTAINER_ARGS[@]}" '
+                        f'"$REXS_APPTAINER" "${{APPTAINER_ARGS[@]}}" '
                         f'"$REXS_IMAGE_{image_index}" {command}'
                     ),
                     f'  ) >"{log_path}" 2>&1 &',

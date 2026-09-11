@@ -84,10 +84,11 @@ class StateStore:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            # Respect the database's journal mode. Changing it on every request
+            # requires an exclusive lock and can conflict with other clients.
             yield connection
             connection.commit()
         finally:
@@ -199,12 +200,13 @@ class StateStore:
             raise KeyError(f"unknown experiment or Slurm job: {identifier}")
         return _experiment(row)
 
-    def list(self, *, status: str | None = None, limit: int = 100) -> list[ExperimentRecord]:
+    def list(self, *, status: str | Sequence[str] | None = None, limit: int = 100) -> list[ExperimentRecord]:
         query = "SELECT * FROM experiments"
         values: list[Any] = []
         if status:
-            query += " WHERE status = ?"
-            values.append(status.upper())
+            statuses = [status] if isinstance(status, str) else status
+            query += " WHERE status IN (" + ",".join("?" for _ in statuses) + ")"
+            values.extend(item.upper() for item in statuses)
         query += " ORDER BY created_at DESC LIMIT ?"
         values.append(limit)
         with self.connect() as connection:
@@ -267,6 +269,19 @@ class StateStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def remember_wandb_links(self, identifier: str, urls: Sequence[str]) -> list[str]:
+        experiment = self.get(identifier)
+        with self.connect() as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO experiment_wandb_links(experiment_id, url) VALUES (?, ?)",
+                [(experiment.id, url) for url in urls],
+            )
+            rows = connection.execute(
+                "SELECT url FROM experiment_wandb_links WHERE experiment_id = ? ORDER BY url",
+                (experiment.id,),
+            ).fetchall()
+        return [row["url"] for row in rows]
+
     def _initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(
@@ -305,6 +320,12 @@ class StateStore:
                     previous_status TEXT,
                     status TEXT NOT NULL,
                     detail TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_wandb_links (
+                    experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+                    url TEXT NOT NULL,
+                    PRIMARY KEY (experiment_id, url)
                 );
 
                 CREATE TABLE IF NOT EXISTS wandb_sources (

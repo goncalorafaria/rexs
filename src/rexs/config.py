@@ -24,6 +24,7 @@ class SlurmProfile:
     cpus_per_task: int = 4
     tasks_per_node: int = 1
     completion_task: str | None = None
+    shared_cpus_per_node: int | None = None
     memory: str | None = None
     apptainer_binary: str = "apptainer"
     image_cache: str = ".rexs/images"
@@ -59,6 +60,12 @@ class SlurmProfile:
             raise ConfigurationError("profile.cpus_per_task must be positive")
         if isinstance(profile.tasks_per_node, bool) or not isinstance(profile.tasks_per_node, int) or profile.tasks_per_node < 1:
             raise ConfigurationError("profile.tasks_per_node must be a positive integer")
+        if profile.shared_cpus_per_node is not None:
+            value = profile.shared_cpus_per_node
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ConfigurationError("profile.shared_cpus_per_node must be a positive integer")
+            if not profile.completion_task:
+                raise ConfigurationError("shared_cpus_per_node requires completion_task")
         return profile
 
 

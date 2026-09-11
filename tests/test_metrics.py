@@ -163,3 +163,19 @@ def test_chart_compaction_preserves_spikes_and_time_order():
     assert compact[0] == points[0] and compact[-1] == points[-1]
     assert points[321] in compact and points[654] in compact
     assert compact == sorted(compact)
+
+
+def test_duplicate_output_copy_shows_once_but_replicas_stay_distinct(tmp_path):
+    store, run, source = fixture(tmp_path)
+    source.write_bytes(HEADER + chunk(stats(10, **{'gpu.0.gpu': 20})))
+    copy = source.parent.parent.parent / 'run_default/wandb/offline-run/run-a.wandb'
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(source.read_bytes() + chunk(stats(20, **{'gpu.0.gpu': 40})))
+    replica = source.parents[3] / '1/wandb/offline-run/run-a.wandb'
+    replica.parent.mkdir(parents=True)
+    replica.write_bytes(source.read_bytes())
+    collector = MetricsCollector(store)
+    collector.collect(run.id)
+    result = collector.snapshot(run.id)
+    assert len(result['sources']) == 2
+    assert sorted(g['utilization'] for g in result['gpus']) == [20, 40]

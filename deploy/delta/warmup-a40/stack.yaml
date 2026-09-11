@@ -1,0 +1,104 @@
+version: v2
+description: 'A40: Redis, gateway, four temporary mirrors, one Podman worker and JSONL
+  warmup'
+tasks:
+- name: redis
+  replicas: 1
+  image:
+    beaker: literegistry-redis
+  command:
+  - python
+  - /deployment/service.py
+  - redis
+  resources:
+    gpuCount: 0
+    cpuCount: 64
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: gateway
+  replicas: 1
+  image:
+    beaker: literegistry-gateway
+  command:
+  - python
+  - /deployment/service.py
+  - gateway
+  resources:
+    gpuCount: 0
+    cpuCount: 64
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: mirror
+  replicas: 4
+  image:
+    beaker: literegistry-mirror
+  command:
+  - python
+  - /deployment/service.py
+  - mirror
+  resources:
+    gpuCount: 0
+    cpuCount: 64
+    memory: 4 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: podman
+  replicas: 1
+  image:
+    beaker: literegistry-podman
+  command:
+  - python
+  - /deployment/service.py
+  - podman
+  resources:
+    gpuCount: 0
+    cpuCount: 64
+    memory: 40 GiB
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  result:
+    path: /results
+- name: warmup
+  image:
+    beaker: literegistry-warmup
+  command:
+  - python
+  - -u
+  - /deployment/warmup-a40/warmup.py
+  resources:
+    cpuCount: 64
+    memory: 4 GiB
+    gpuCount: 0
+  hostNetworking: true
+  datasets:
+  - mountPath: /deployment
+    source:
+      hostPath: /u/galvesfaria/rexs/deploy/delta
+  - mountPath: /training
+    source:
+      hostPath: /u/galvesfaria/primebeaker
+  result:
+    path: /results
+  envVars:
+  - name: REXS_MIRROR_REPLICAS
+    value: '4'

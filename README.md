@@ -1,7 +1,6 @@
 <div align="center">
   <img src="src/rexs/static/rexs-logo.png" width="160" alt="REXS green T-rex badge">
-  <h1>REXS</h1>
-  <p><strong>Reproducible Experiments, eXecuted on Slurm.</strong></p>
+  <h1>[R]eproducible [E]xperiments, e[X]ecuted on [S]lurm.</h1>
   <p>Run the Beaker experiment configurations you already have on Slurm and Apptainer.</p>
 
   [![CI](https://github.com/goncalorafaria/rexs/actions/workflows/ci.yml/badge.svg)](https://github.com/goncalorafaria/rexs/actions/workflows/ci.yml)
@@ -20,6 +19,37 @@ events.
 It focuses deliberately on the Beaker features exercised by `datadev` and
 LiteRegistry. Unsupported fields produce warnings; `--strict` promotes any
 lossy translation to an error before submission.
+
+## REXS in operation
+
+Screenshots from a live REXS dashboard on Delta. At capture time, one experiment
+was queued; the other views show recorded runs and their actual final statuses.
+
+**Experiment history** — browse jobs, requested resources, replicas, and outcomes.
+
+![REXS experiment history with queued, completed, canceled, and timed-out Slurm jobs](docs/assets/screenshots/02-experiment-history.png)
+
+**Eight-GPU metrics** — retained utilization and memory charts from an H200 run
+that reached its time limit.
+
+![REXS dashboard showing recorded utilization and memory charts for eight GPUs](docs/assets/screenshots/04-eight-gpu-metrics.png)
+
+<details>
+<summary>More screenshots: current queue, resource overview, and completed-run logs</summary>
+
+**Current queue** — a pending experiment requesting eight H200 GPUs.
+
+![REXS active experiment view showing a queued eight-GPU job](docs/assets/screenshots/01-current-queue.png)
+
+**Experiment overview** — requested resources and individual task replicas.
+
+![REXS experiment overview showing resource requests and task replica logs](docs/assets/screenshots/03-experiment-overview.png)
+
+**Completed-run logs** — output from a successful LiteRegistry cluster smoke test.
+
+![REXS completed experiment showing successful service checks in its replica log](docs/assets/screenshots/05-completed-run-logs.png)
+
+</details>
 
 ## How it works
 
@@ -78,7 +108,8 @@ Submit and inspect the run:
 
 ```bash
 rexs submit experiment.yaml --profile profile.yaml --name my-run --strict
-rexs experiments
+rexs experiments                 # queued and running only
+rexs experiments --all           # include finished experiments
 rexs status 123456
 rexs logs 123456 --task=trainer --replica=0
 rexs cancel 123456
@@ -91,6 +122,23 @@ rexs server --host=127.0.0.1 --port=8765 --daemon
 # Open http://127.0.0.1:8765
 rexs server_stop
 ```
+
+The dashboard and all API routes require HTTP Basic authentication by default.
+Use username `rexs`. On first start, REXS generates a unique password and saves it
+with owner-only permissions in `~/.local/state/rexs/server.password` (beside a
+custom state database when `--db` is used). Read it with:
+
+```bash
+cat ~/.local/state/rexs/server.password
+```
+
+The saved password persists across restarts. Set `REXS_SERVER_PASSWORD` in the
+server's environment to override it; empty passwords are rejected. The password
+is never included in server URLs, process arguments, or logs. After changing a
+password, restart the server and sign in again. Authenticated API POST requests
+must also send `X-REXS-Request: 1`; the dashboard adds this automatically.
+Keep the loopback binding and access it through SSH port forwarding. Basic
+authentication should use HTTPS if exposing the server beyond that tunnel.
 
 The dashboard shows searchable experiment history, status filters, submitted
 YAML, state transitions, task-level logs, and guarded cancellation.
@@ -232,3 +280,7 @@ reproducible Beaker-to-Slurm execution rather than a fixed service composition.
 ## License
 
 [MIT](LICENSE)
+
+### GPU isolation with shared CPUs
+
+With `shared_cpus_per_node`, CPU-only service steps use `--overlap --gres=none`. GPU steps use `--exclusive --exact --gpus-per-task=N --gpus-per-node=N` and their own CPU count, allowing Slurm to allocate disjoint GPUs to concurrent model replicas. GPU steps must fit together within the shared CPU budget. The container wrapper must preserve Slurm's `CUDA_VISIBLE_DEVICES` through `APPTAINERENV_CUDA_VISIBLE_DEVICES` when using `--cleanenv`.

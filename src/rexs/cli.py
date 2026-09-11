@@ -169,13 +169,20 @@ class Rexs:
         db: str | None = None,
         details: bool = False,
         ids_only: bool = False,
+        all: bool = False,
     ) -> str | list[dict[str, Any]]:
-        """List ID, status and name. Use --details for JSON or --ids-only for IDs."""
+        """List queued/running experiments. Use --all for history or --status to filter.
+
+        Use --details for JSON or --ids-only for IDs.
+        """
 
         controller = Controller(db)
         if refresh:
             controller.refresh()
-        records = controller.store.list(status=status, limit=limit)
+        records = controller.store.list(
+            status=status or (None if all else ("SUBMITTED", "PENDING", "RUNNING")),
+            limit=limit,
+        )
         if ids_only:
             return "\n".join(item.job_id or item.id for item in records)
         if details:
