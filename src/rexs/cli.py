@@ -37,6 +37,13 @@ class Rexs:
     ) -> dict[str, Any]:
         """Validate and summarize a Beaker v2 experiment without writing or submitting."""
 
+        spec = load_experiment(experiment, substitutions=_definitions(define))
+        if 'rexs' in spec:
+            from rexs.allocations import compile_plan
+            planned = compile_plan(spec,experiment,default_profile=profile,name=name or Path(experiment).stem,strict=strict,
+                image_map=load_mapping_file(image_map,'image map'),dataset_map=load_mapping_file(dataset_map,'dataset map'))
+            return {'valid':True,'job':name or Path(experiment).stem,'allocations':[
+                {'name':a.name,'nodes':r.nodes,'task_replicas':r.tasks,'gpus_per_node':r.gpus_per_node,'warnings':list(r.warnings)} for a,r in planned]}
         _, _, result = _compile_inputs(experiment, profile, image_map, dataset_map, define, name)
         _check_and_report(result, strict)
         return {
@@ -97,6 +104,19 @@ class Rexs:
     ) -> str:
         """Render an sbatch script to stdout or --output."""
 
+        spec = load_experiment(experiment, substitutions=_definitions(define))
+        if 'rexs' in spec:
+            from rexs.allocations import compile_plan
+            planned = compile_plan(spec,experiment,default_profile=profile,name=name or Path(experiment).stem,strict=strict,
+                image_map=load_mapping_file(image_map,'image map'),dataset_map=load_mapping_file(dataset_map,'dataset map'))
+            preview = lambda script: script.replace('set -Eeuo pipefail', 'echo \"REXS allocation preview: submit the experiment with rexs submit\" >&2; exit 2\nset -Eeuo pipefail', 1)
+            if output is None:
+                return json.dumps({a.name:preview(r.script) for a,r in planned},indent=2)
+            directory=Path(output).expanduser()
+            directory.mkdir(parents=True,exist_ok=True)
+            for a,r in planned:
+                _write_script(directory / f'{a.name}.sbatch',preview(r.script))
+            return str(directory)
         _, _, result = _compile_inputs(experiment, profile, image_map, dataset_map, define, name)
         _check_and_report(result, strict)
         if output is None:
@@ -119,6 +139,13 @@ class Rexs:
         db: str | None = None,
     ) -> dict[str, Any]:
         """Compile, persist, submit with sbatch, and register the experiment in SQLite."""
+
+        source_spec = load_experiment(experiment, substitutions=_definitions(define))
+        if 'rexs' in source_spec:
+            from rexs.allocations import submit
+            return submit(source_spec, experiment, name=name or Path(experiment).stem,
+                default_profile=profile, db=db, strict=strict, sbatch_args=_string_list(sbatch_args), output=output,
+                image_map=load_mapping_file(image_map, 'image map'), dataset_map=load_mapping_file(dataset_map, 'dataset map'))
 
         spec, slurm_profile, result = _compile_inputs(
             experiment,

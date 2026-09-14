@@ -1,0 +1,7 @@
+images:
+  runtime: /images/runtime.sif
+run_root: .rexs/runs
+time_limit: 00:10:00
+cpus_per_task: 2
+memory: 4G
+gpu_type: h200

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from rexs.cli import Rexs
+from rexs.config import load_experiment
 
 
 def main() -> None:
@@ -31,11 +32,12 @@ def main() -> None:
                   if args.dry_run else Rexs().cancel(args.identifier))
         print(json.dumps(result, indent=2))
         return
-    if not args.profile:
+    grouped = (not args.profile or args.dry_run) and 'rexs' in load_experiment(args.spec)
+    if not args.profile and not grouped:
         parser.error("set REXS_PROFILE or pass --profile to select the Slurm cluster")
     rex = Rexs()
     if args.dry_run:
-        output = str(Path(args.spec).with_suffix(".sbatch"))
+        output = str(Path(args.spec).with_suffix(".scripts" if grouped else ".sbatch"))
         script = rex.render(args.spec, profile=args.profile, name=args.name, output=output)
         result = {"backend": "rexs", "submitted": False, "script": script}
     else:

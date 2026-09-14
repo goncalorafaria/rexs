@@ -111,7 +111,7 @@ class MetricsCollector:
             return
         try:
             experiment = self.store.get(identifier)
-            if not experiment.job_id or time.monotonic() - self.last_scan.get(experiment.id, -60) < 10:
+            if (not experiment.job_id and not experiment.allocations) or time.monotonic() - self.last_scan.get(experiment.id, -60) < 10:
                 return
             self.last_scan[experiment.id] = time.monotonic()
             try:
@@ -120,14 +120,15 @@ class MetricsCollector:
                 self.error = "Optional W&B reader unavailable. Install rexs[wandb] to capture local metrics."
                 return
             self.error = None
-            root = Path(experiment.run_root) / experiment.job_id
-            for index, path in enumerate(discover(root)):
-                if index >= 64:
-                    break
-                try:
-                    self._file(experiment.id, root, path, Record)
-                except Exception as exc:  # noqa: BLE001 - isolate optional source failures
-                    self._source_error(experiment.id, path, str(exc))
+            roots = [Path(a['run_root']) / a['job_id'] for a in experiment.allocations if a['job_id']] if experiment.allocations else [Path(experiment.run_root) / experiment.job_id]
+            for root in roots:
+                for index, path in enumerate(discover(root)):
+                    if index >= 64:
+                        break
+                    try:
+                        self._file(experiment.id, root, path, Record)
+                    except Exception as exc:  # noqa: BLE001 - isolate optional metric source failures
+                        self._source_error(experiment.id, path, str(exc))
         finally:
             self.lock.release()
 

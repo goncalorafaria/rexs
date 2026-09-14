@@ -57,3 +57,17 @@ def test_missing_and_modified_scripts_are_not_reported_as_verified(tmp_path):
     assert resource_summary(experiment)["nodes"] == 1
     path.write_bytes(b"#SBATCH --nodes=99\n")
     assert not resource_summary(experiment)["available"]
+
+
+def test_gpu_types_stay_separate_within_and_across_allocations(tmp_path):
+    mixed = parse_resources('#SBATCH --nodes=2\n#SBATCH --gres=gpu:h200:1,gpu:l40:2\n')
+    assert mixed['gpu_counts'] == {'H200': 2, 'L40': 4}
+    allocations = []
+    for index, model in enumerate(['h200', 'h200', 'l40', 'l40', 'l40', 'l40']):
+        raw = f'#SBATCH --nodes=1\n#SBATCH --gpus-per-node={model}:1\n'.encode()
+        path = tmp_path / f'{index}.sbatch'
+        path.write_bytes(raw)
+        allocations.append({'script_path': str(path), 'script_sha256': hashlib.sha256(raw).hexdigest()})
+    result = resource_summary(SimpleNamespace(allocations=allocations))
+    assert result['gpus'] == 6
+    assert result['gpu_counts'] == {'H200': 2, 'L40': 4}

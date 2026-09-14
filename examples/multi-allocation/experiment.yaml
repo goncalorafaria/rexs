@@ -1,0 +1,73 @@
+version: v2
+description: 'Scheduling example: one experiment, independent GPU replicas, completion
+  cleanup'
+tasks:
+- name: services
+  replicas: 1
+  image:
+    beaker: runtime
+  command:
+  - python
+  - -u
+  - -c
+  - import os,time; print(os.environ.get("REXS_EXPERIMENT_ID"), os.environ.get("BEAKER_REPLICA_RANK"),
+    flush=True); time.sleep(300)
+  resources:
+    gpuCount: 0
+- name: judge
+  replicas: 2
+  image:
+    beaker: runtime
+  command:
+  - python
+  - -u
+  - -c
+  - import os,time; print(os.environ.get("REXS_EXPERIMENT_ID"), os.environ.get("BEAKER_REPLICA_RANK"),
+    flush=True); time.sleep(300)
+  resources:
+    gpuCount: 1
+- name: policy
+  replicas: 4
+  image:
+    beaker: runtime
+  command:
+  - python
+  - -u
+  - -c
+  - import os,time; print(os.environ.get("REXS_EXPERIMENT_ID"), os.environ.get("BEAKER_REPLICA_RANK"),
+    flush=True); time.sleep(300)
+  resources:
+    gpuCount: 1
+- name: evaluation
+  replicas: 1
+  image:
+    beaker: runtime
+  command:
+  - python
+  - -u
+  - -c
+  - import os,time; print(os.environ.get("REXS_EXPERIMENT_ID"), os.environ.get("BEAKER_REPLICA_RANK"),
+    flush=True); time.sleep(30)
+  resources:
+    gpuCount: 0
+rexs:
+  allocations:
+  - name: cpu
+    tasks:
+    - services
+    profile: cpu.yaml
+  - name: judge
+    tasks:
+    - judge
+    profile: l40.yaml
+    independent_replicas: true
+  - name: policy
+    tasks:
+    - policy
+    profile: h200.yaml
+    independent_replicas: true
+  - name: evaluation
+    tasks:
+    - evaluation
+    profile: cpu.yaml
+  completion_task: evaluation

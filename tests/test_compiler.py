@@ -381,3 +381,23 @@ def test_shared_cpu_pool_requires_joint_lifecycle():
 
     with pytest.raises(ConfigurationError, match="requires completion_task"):
         SlurmProfile.from_mapping({"shared_cpus_per_node": 96})
+
+
+@pytest.mark.parametrize("gpu_type", ["h200", "l40", "l40s"])
+def test_typed_gpu_allocation_and_steps_agree(gpu_type):
+    spec = {"version": "v2", "tasks": [{"name": "worker", "image": {"docker": "ubuntu:24.04"},
+             "command": ["true"], "resources": {"gpuCount": 2}, "replicas": 2}]}
+    result = compile_experiment(spec, profile=SlurmProfile.from_mapping({"gpu_type": gpu_type}))
+    assert f"#SBATCH --gpus-per-node={gpu_type}:2" in result.script
+    assert result.script.count(f"--gpus-per-task={gpu_type}:2") == 2
+    assert result.script.count(f"--gpus-per-node={gpu_type}:2") == 3
+    spec["tasks"][0]["resources"]["gpuCount"] = 0
+    cpu = compile_experiment(spec, profile=SlurmProfile.from_mapping({"gpu_type": gpu_type}))
+    assert "--gpus-per" not in cpu.script
+
+
+@pytest.mark.parametrize("gpu_type", ["", "h200:8", "h200\n#SBATCH --exclusive", 12])
+def test_invalid_gpu_type_rejected(gpu_type):
+    from rexs.errors import ConfigurationError
+    with pytest.raises(ConfigurationError, match="gpu_type"):
+        SlurmProfile.from_mapping({"gpu_type": gpu_type})

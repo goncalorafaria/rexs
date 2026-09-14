@@ -5,7 +5,7 @@ import os
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -54,10 +54,14 @@ class ExperimentRecord:
     runtime_seconds: int | None = None
     estimated_start_at: str | None = None
 
+    allocations: tuple[dict[str, Any], ...] = ()
+
     def as_dict(self, *, include_spec: bool = False) -> dict[str, Any]:
         value = asdict(self)
         if not include_spec:
             value.pop("spec_text")
+            for allocation in value["allocations"]:
+                allocation.pop("spec_text", None)
         return value
 
 
@@ -68,6 +72,8 @@ class TaskRecord:
     replica_rank: int
     log_path: str | None
     result_path: str | None
+    allocation: str | None = None
+    job_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -193,12 +199,12 @@ class StateStore:
     def get(self, identifier: str) -> ExperimentRecord:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM experiments WHERE id = ? OR job_id = ? ORDER BY created_at DESC LIMIT 1",
-                (identifier, identifier),
+                "SELECT * FROM experiments WHERE id = ? OR job_id = ? OR id IN (SELECT experiment_id FROM allocations WHERE job_id = ?) ORDER BY created_at DESC LIMIT 1",
+                (identifier, identifier, identifier),
             ).fetchone()
         if row is None:
             raise KeyError(f"unknown experiment or Slurm job: {identifier}")
-        return _experiment(row)
+        return self._record(row)
 
     def list(self, *, status: str | Sequence[str] | None = None, limit: int = 100) -> list[ExperimentRecord]:
         query = "SELECT * FROM experiments"
@@ -211,7 +217,7 @@ class StateStore:
         values.append(limit)
         with self.connect() as connection:
             rows = connection.execute(query, values).fetchall()
-        return [_experiment(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def active(self) -> list[ExperimentRecord]:
         placeholders = ",".join("?" for _ in TERMINAL_STATES)
@@ -219,12 +225,12 @@ class StateStore:
             rows = connection.execute(
                 f"""
                 SELECT * FROM experiments
-                WHERE job_id IS NOT NULL AND status NOT IN ({placeholders})
+                WHERE (job_id IS NOT NULL OR EXISTS (SELECT 1 FROM allocations WHERE experiment_id = experiments.id)) AND status NOT IN ({placeholders})
                 ORDER BY created_at
                 """,
                 tuple(TERMINAL_STATES),
             ).fetchall()
-        return [_experiment(row) for row in rows]
+        return [self._record(row) for row in rows]
 
     def tasks(self, identifier: str) -> list[TaskRecord]:
         experiment = self.get(identifier)
@@ -239,13 +245,19 @@ class StateStore:
                 (experiment.id,),
             ).fetchall()
         result: list[TaskRecord] = []
+        bindings = {}
+        for allocation in experiment.allocations:
+            for binding in allocation["tasks"]:
+                bindings[(binding["name"], binding["rank"])] = (allocation, binding["local_rank"])
         for row in rows:
             log_path = None
             result_path = None
-            if experiment.job_id:
-                run_dir = Path(experiment.run_root) / experiment.job_id
-                log_path = str(run_dir / "logs" / f"{row['name']}.{row['replica_rank']}.log")
-                result_path = str(run_dir / "results" / row["name"] / str(row["replica_rank"]))
+            allocation, rank = bindings.get((row["name"], row["replica_rank"]), ({}, row["replica_rank"]))
+            job_id = allocation.get("job_id", experiment.job_id)
+            if job_id:
+                run_dir = Path(allocation.get("run_root", experiment.run_root)) / job_id
+                log_path = str(run_dir / "logs" / f"{row['name']}.{rank}.log")
+                result_path = str(run_dir / "results" / row["name"] / str(rank))
             result.append(
                 TaskRecord(
                     experiment_id=experiment.id,
@@ -253,9 +265,64 @@ class StateStore:
                     replica_rank=row["replica_rank"],
                     log_path=log_path,
                     result_path=result_path,
+                    allocation=allocation.get("name"),
+                    job_id=job_id,
                 )
             )
         return result
+
+    def _record(self, row):
+        return replace(_experiment(row), allocations=tuple(self.allocations(row["id"])))
+
+    def allocations(self, experiment_id):
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM allocations WHERE experiment_id=? ORDER BY ordinal", (experiment_id,)
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["tasks"] = json.loads(item.pop("tasks_json"))
+            result.append(item)
+        return result
+
+    def add_allocation(
+        self, experiment_id, *, name, ordinal, spec_text, script_path, script_sha256, run_root, tasks, completion=False
+    ):
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO allocations (experiment_id,name,ordinal,status,spec_text,script_path,script_sha256,run_root,tasks_json,completion) VALUES (?,?,?,'GENERATED',?,?,?,?,?,?)",
+                (
+                    experiment_id,
+                    name,
+                    ordinal,
+                    spec_text,
+                    script_path,
+                    script_sha256,
+                    run_root,
+                    json.dumps(tasks),
+                    int(completion),
+                ),
+            )
+
+    def update_allocation(
+        self,
+        experiment_id,
+        name,
+        status,
+        *,
+        job_id=None,
+        exit_code=None,
+        script_path=None,
+        script_sha256=None,
+        detail=None,
+    ):
+        with self.connect() as db:
+            db.execute(
+                "UPDATE allocations SET status=?, job_id=COALESCE(?,job_id),exit_code=COALESCE(?,exit_code),script_path=COALESCE(?,script_path),script_sha256=COALESCE(?,script_sha256) WHERE experiment_id=? AND name=?",
+                (status, job_id, exit_code, script_path, script_sha256, experiment_id, name),
+            )
+            self._event(db, experiment_id, None, status, f"Allocation {name}: {detail or status}")
 
     def events(self, identifier: str) -> list[dict[str, Any]]:
         experiment = self.get(identifier)
@@ -306,6 +373,14 @@ class StateStore:
                     finished_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS allocations (
+                    experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL, ordinal INTEGER NOT NULL, status TEXT NOT NULL,
+                    job_id TEXT UNIQUE, exit_code TEXT, spec_text TEXT NOT NULL,
+                    script_path TEXT NOT NULL, script_sha256 TEXT NOT NULL,
+                    run_root TEXT NOT NULL, tasks_json TEXT NOT NULL, completion INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(experiment_id,name)
+                );
                 CREATE TABLE IF NOT EXISTS task_replicas (
                     experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
