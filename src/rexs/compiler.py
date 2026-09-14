@@ -395,7 +395,7 @@ def _headers(
     if profile.tasks_per_node > 1 and not profile.completion_task:
         directives.append(("ntasks-per-node", profile.tasks_per_node))
     if gpus:
-        directives.append(("gpus-per-node", gpus))
+        directives.append(("gpus-per-node", f"{profile.gpu_type}:{gpus}" if profile.gpu_type else gpus))
     directives.extend((("mem", memory), ("partition", partition), ("account", account), ("qos", qos)))
     directives.extend(profile.sbatch.items())
     lines = ["#!/usr/bin/env bash"]
@@ -407,7 +407,33 @@ def _headers(
 
 
 def _runtime_preamble(profile: SlurmProfile, nodes: int) -> list[str]:
+    cleanup_jobs = " ".join(shlex.quote(job) for job in profile.cleanup_job_ids)
     lines = [
+        "",
+        "REXS_PIDS=()",
+        "REXS_CLEANED_UP=0",
+        f"REXS_CLEANUP_JOB_IDS=({cleanup_jobs})",
+        "cleanup() {",
+        "  local pid job",
+        "  (( REXS_CLEANED_UP )) && return 0",
+        "  REXS_CLEANED_UP=1",
+        '  for pid in "${REXS_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done',
+        # Cancel dependencies before waiting for a slow/stuck evaluator child.
+        '  for job in "${REXS_CLEANUP_JOB_IDS[@]}"; do',
+        '    [[ "$job" == "${SLURM_JOB_ID:-}" ]] && continue',
+        '    if scancel --user="$(id -un)" "$job"; then',
+        '      echo "REXS_CLEANUP_CANCELLED_JOB=$job"',
+        '    else',
+        '      echo "warning: could not cancel deployment job $job" >&2',
+        '    fi',
+        '  done',
+        '  for pid in "${REXS_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done',
+        "  return 0",
+        "}",
+        "trap cleanup EXIT",
+        "trap 'exit 130' INT",
+        "trap 'exit 143' TERM",
+        "trap 'exit 129' HUP",
         "",
         f"REXS_APPTAINER=${{REXS_APPTAINER:-{shlex.quote(profile.apptainer_binary)}}}",
         f"REXS_IMAGE_CACHE=${{REXS_IMAGE_CACHE:-{shlex.quote(profile.image_cache)}}}",
@@ -438,17 +464,6 @@ def _runtime_preamble(profile: SlurmProfile, nodes: int) -> list[str]:
             f'  echo "expected {nodes} allocated nodes, got ${{#REXS_NODES[@]}}" >&2',
             "  exit 2",
             "fi",
-            "REXS_PIDS=()",
-            "REXS_CLEANED_UP=0",
-            "cleanup() {",
-            "  local pid",
-            "  (( REXS_CLEANED_UP )) && return 0",
-            "  REXS_CLEANED_UP=1",
-            '  for pid in "${REXS_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done',
-            '  for pid in "${REXS_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done',
-            "}",
-            "trap cleanup EXIT INT TERM",
-            "",
             "prepare_image() {",
             "  local source=$1 alias=$2 target temporary",
             '  if [[ "$source" != *://* ]]; then',
@@ -549,7 +564,8 @@ def _task_launches(plans: Sequence[TaskPlan], profile: SlurmProfile) -> list[str
             if task.gpu_count:
                 # Exclusive GPU steps let Slurm allocate disjoint GRES. Only
                 # CPU-only service steps overlap, explicitly requesting no GRES.
-                srun_args.extend((f"--gpus-per-task={task.gpu_count}", f"--gpus-per-node={task.gpu_count}"))
+                gpu_request = f"{profile.gpu_type}:{task.gpu_count}" if profile.gpu_type else str(task.gpu_count)
+                srun_args.extend((f"--gpus-per-task={gpu_request}", f"--gpus-per-node={gpu_request}"))
             elif profile.tasks_per_node > 1:
                 # A site may reserve a GPU in SBATCH for CPU-only services.
                 # Do not let concurrent steps inherit that exclusive GRES.
@@ -583,7 +599,18 @@ def _supervisor(completion_task: str | None = None) -> list[str]:
         return [
             'echo "launched ${#REXS_PIDS[@]} task replicas; logs: $REXS_RUN_DIR/logs"',
             "set +e",
-            'wait -n -p finished_pid "${REXS_PIDS[@]}"',
+            'if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then',
+            '  wait -n -p finished_pid "${REXS_PIDS[@]}"',
+            'else',
+            '  finished_pid=',
+            '  while [[ -z "$finished_pid" ]]; do',
+            '    for pid in "${REXS_PIDS[@]}"; do',
+            '      if ! kill -0 "$pid" 2>/dev/null; then finished_pid=$pid; break; fi',
+            '    done',
+            '    [[ -n "$finished_pid" ]] || sleep 0.1',
+            '  done',
+            '  wait "$finished_pid"',
+            'fi',
             "exit_code=$?",
             "set -e",
             'if [[ ${finished_pid:-} != "$REXS_COMPLETION_PID" ]]; then',
@@ -591,7 +618,7 @@ def _supervisor(completion_task: str | None = None) -> list[str]:
             "  (( exit_code != 0 )) || exit_code=1",
             "fi",
             "cleanup",
-            "trap - EXIT INT TERM",
+            "trap - EXIT INT TERM HUP",
             'exit "$exit_code"',
         ]
     return [
@@ -611,7 +638,7 @@ def _supervisor(completion_task: str | None = None) -> list[str]:
         "  fi",
         "done",
         "cleanup",
-        "trap - EXIT INT TERM",
+        "trap - EXIT INT TERM HUP",
         'exit "$exit_code"',
     ]
 

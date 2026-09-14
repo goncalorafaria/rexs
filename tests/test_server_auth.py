@@ -125,8 +125,9 @@ def test_password_login_establishes_session_for_browser_requests(dashboard):
 
 @pytest.mark.parametrize('host,expected', [('127.0.0.1','127.0.0.1'), ('0.0.0.0','localhost'), ('::','localhost'), ('::1','[::1]')])
 def test_dashboard_url_escapes_credentials(host, expected):
-    from rexs.auth import dashboard_url
     from urllib.parse import unquote, urlsplit
+
+    from rexs.auth import dashboard_url
 
     url = dashboard_url(host, 8767, 'secret:@/#?% space')
     assert url.endswith(f'@{expected}:8767/')

@@ -3,9 +3,28 @@
 import hashlib
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def resource_summary(experiment):
+    if getattr(experiment, 'allocations', ()):
+        parts = [resource_summary(SimpleNamespace(**item)) for item in experiment.allocations]
+        if not all(part['available'] for part in parts):
+            return {'available':False,'reason':'One or more allocation resource requests are unavailable.'}
+        total = {'available':True}
+        for key in ('nodes','cpus','gpus','memory_gib'):
+            total[key] = sum(part[key] for part in parts) if all(part[key] is not None for part in parts) else None
+        for key in ('gpu_type','partition'):
+            total[key] = '/'.join(dict.fromkeys(part[key] for part in parts if part[key])) or None
+        gpu_counts = {}
+        for part in parts:
+            for model, count in part['gpu_counts'].items():
+                previous = gpu_counts.get(model, 0)
+                gpu_counts[model] = previous + count if previous is not None and count is not None else None
+        total['gpu_counts'] = gpu_counts
+        total['gpu_type_from_partition'] = any(part['gpu_type_from_partition'] for part in parts)
+        total['memory_all'] = any(part['memory_all'] for part in parts)
+        return total
     try:
         raw = Path(experiment.script_path).read_bytes()
     except OSError:
@@ -32,6 +51,7 @@ def parse_resources(script):
     cpus = tasks * cpu_per_task if tasks is not None and cpu_per_task is not None else None
     gpu_type = None
     gpus = 0
+    gpu_counts = {}
     for key, multiplier in (("gpus", 1), ("gpus-per-node", nodes), ("gpus-per-task", tasks), ("gres", nodes)):
         if key not in options:
             continue
@@ -45,8 +65,13 @@ def parse_resources(script):
             match = re.fullmatch(r"(?:(\w[\w.-]*):)?(\d+)", entry)
             if not match:
                 total = None
+                gpu_counts = {"GPUs": None}
                 break
             total += int(match[2])
+            model = match[1].upper() if match[1] else 'GPUs'
+            count = int(match[2]) * multiplier if multiplier is not None else None
+            previous = gpu_counts.get(model, 0)
+            gpu_counts[model] = previous + count if previous is not None and count is not None else None
             if match[1]:
                 types.append(match[1].upper())
         gpus = total * multiplier if total is not None and multiplier is not None else None
@@ -59,6 +84,7 @@ def parse_resources(script):
         if match:
             gpu_type = match[1].upper()
             inferred = True
+            gpu_counts = {gpu_type: gpus}
     memory_mib = None
     memory_all = False
     memory_key = next((key for key in ("mem", "mem-per-cpu", "mem-per-gpu") if key in options), None)
@@ -78,6 +104,7 @@ def parse_resources(script):
         "cpus": cpus,
         "gpus": gpus,
         "gpu_type": gpu_type,
+        "gpu_counts": gpu_counts,
         "gpu_type_from_partition": inferred,
         "memory_gib": memory_mib / 1024 if memory_mib is not None else None,
         "memory_all": memory_all,

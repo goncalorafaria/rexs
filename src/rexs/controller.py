@@ -48,15 +48,23 @@ class Controller:
         self,
         db_path: str | Path | None = None,
         *,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self.store = StateStore(db_path)
-        self.runner = runner
+        self.runner = runner or subprocess.run
 
     def refresh(self, identifier: str | None = None) -> list[RefreshResult]:
         experiments = [self.store.get(identifier)] if identifier else self.store.active()
         updates: list[RefreshResult] = []
         for experiment in experiments:
+            if experiment.allocations:
+                try:
+                    updates.extend(self._refresh_allocations(experiment))
+                except (OSError, subprocess.SubprocessError):
+                    if identifier:
+                        raise
+                    logger.warning("Could not refresh grouped experiment %s", experiment.id, exc_info=True)
+                continue
             if not experiment.job_id or experiment.status in TERMINAL_STATES:
                 continue
             try:
@@ -88,6 +96,52 @@ class Controller:
         except (OSError, subprocess.SubprocessError):
             logger.warning("Could not refresh scheduled start estimates", exc_info=True)
         return updates
+
+    def _refresh_allocations(self, experiment):
+        updates = []
+        for allocation in experiment.allocations:
+            if not allocation["job_id"] or allocation["status"] in TERMINAL_STATES:
+                continue
+            try:
+                status, exit_code, detail = self._slurm_status(allocation["job_id"])
+            except (OSError, subprocess.SubprocessError):
+                logger.warning("Could not refresh allocation %s", allocation["name"], exc_info=True)
+                continue
+            if status != allocation["status"] or exit_code:
+                self.store.update_allocation(
+                    experiment.id, allocation["name"], status, exit_code=exit_code, detail=detail
+                )
+            updates.append(RefreshResult(experiment.id, allocation["job_id"], allocation["status"], status, exit_code))
+        allocations = self.store.allocations(experiment.id)
+        completion = next((a for a in allocations if a["completion"]), None)
+        if completion and completion["status"] in TERMINAL_STATES:
+            # Cancellation of services is normal when the completion task exits.
+            self._cancel_allocations(experiment.id, allocations)
+            self.store.update_status(
+                experiment.id, completion["status"], exit_code=completion["exit_code"], detail="Completion task exited"
+            )
+        else:
+            states = [a["status"] for a in allocations]
+            if all(state in TERMINAL_STATES for state in states):
+                failures = [state for state in states if state not in ("COMPLETED", "CANCELLED")]
+                status = failures[0] if failures else ("CANCELLED" if "CANCELLED" in states else "COMPLETED")
+            elif "RUNNING" in states:
+                status = "RUNNING"
+            elif any(state in ("PENDING", "SUBMITTED") for state in states):
+                status = "PENDING"
+            else:
+                status = "UNKNOWN"
+            self.store.update_status(experiment.id, status, detail="Aggregate allocation status")
+        return updates
+
+    def _cancel_allocations(self, experiment_id, allocations):
+        active = [a for a in allocations if a["job_id"] and a["status"] not in TERMINAL_STATES]
+        if active:
+            self.runner(["scancel", *[a["job_id"] for a in active]], check=True, text=True, capture_output=True)
+            for allocation in active:
+                self.store.update_allocation(
+                    experiment_id, allocation["name"], "CANCELLED", detail="Experiment cleanup"
+                )
 
     def refresh_start_estimates(self):
         records = [item for item in self.store.active() if item.job_id and item.status in {"SUBMITTED", "PENDING"}]
@@ -149,6 +203,9 @@ class Controller:
 
     def cancel(self, identifier: str) -> ExperimentRecord:
         experiment = self.store.get(identifier)
+        if experiment.allocations:
+            self._cancel_allocations(experiment.id, experiment.allocations)
+            return self.store.update_status(experiment.id, "CANCELLED", detail="All experiment allocations cancelled")
         if not experiment.job_id:
             raise ValueError(f"experiment {experiment.id} has no submitted Slurm job")
         if experiment.status in TERMINAL_STATES:

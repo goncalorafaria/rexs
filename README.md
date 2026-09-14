@@ -10,7 +10,7 @@
 </div>
 
 REXS is a small compatibility layer between Beaker v2 experiment files and a
-Slurm cluster. It compiles each experiment into an auditable `sbatch` script,
+Slurm cluster. It compiles each experiment into one or more auditable `sbatch` scripts,
 runs every task replica as an exclusive `srun` step inside Apptainer, and uses
 Slurm itself as the execution engine. A lightweight SQLite controller records
 the submitted configuration, job state, task replicas, logs, and lifecycle
@@ -57,8 +57,8 @@ that reached its time limit.
 flowchart LR
     A[Beaker v2<br>YAML / JSON] --> B[REXS compiler]
     P[Site profile<br>images · mounts · Slurm] --> B
-    B --> C[Auditable<br>sbatch script]
-    C --> D[Slurm allocation]
+    B --> C[Auditable<br>sbatch scripts]
+    C --> D[Slurm allocations]
     D --> E1[srun task 0<br>Apptainer]
     D --> E2[srun task 1<br>Apptainer]
     D --> EN[srun task N<br>Apptainer]
@@ -66,11 +66,12 @@ flowchart LR
     S --> UI[CLI + web dashboard]
 ```
 
-One Beaker experiment becomes one Slurm allocation. Task replicas are assigned
+One Beaker experiment can own one or multiple Slurm allocations. Task replicas are assigned
 to nodes deterministically, receive Beaker-compatible replica environment
 variables, share the host network, and write individual logs and result trees.
-If one replica fails, REXS terminates its siblings and exits the allocation
-with a failure.
+If one replica fails, REXS terminates its siblings within that allocation and
+exits it with a failure. Independently scheduled allocations remain separate
+failure domains under the same logical experiment.
 
 ## Install
 
@@ -152,6 +153,7 @@ separate REXS profile:
 account: research
 partition: gpu
 qos: normal
+gpu_type: h200  # optional; keep GPU type consistent in sbatch and srun
 time_limit: "24:00:00"
 cpus_per_task: 8
 memory: 64G
@@ -284,3 +286,85 @@ reproducible Beaker-to-Slurm execution rather than a fixed service composition.
 ### GPU isolation with shared CPUs
 
 With `shared_cpus_per_node`, CPU-only service steps use `--overlap --gres=none`. GPU steps use `--exclusive --exact --gpus-per-task=N --gpus-per-node=N` and their own CPU count, allowing Slurm to allocate disjoint GPUs to concurrent model replicas. GPU steps must fit together within the shared CPU budget. The container wrapper must preserve Slurm's `CUDA_VISIBLE_DEVICES` through `APPTAINERENV_CUDA_VISIBLE_DEVICES` when using `--cleanenv`.
+
+### Dependent deployment cleanup
+
+Set `cleanup_job_ids: ["12345", "12346"]` in a Slurm profile to cancel those
+specific jobs when the allocation exits. The generated batch script installs
+EXIT/INT/TERM/HUP cleanup before setup and image preparation, preserves the task
+exit code, skips its own job ID, and limits cancellation to the current user.
+Use the evaluator profile for a deployment whose lifetime should end with eval.
+Shell traps cannot run after SIGKILL or loss of the batch node.
+
+### One experiment, multiple Slurm allocations
+
+A Beaker v2 spec can include a `rexs` scheduling section. Submit it once with
+`rexs submit experiment.yaml --strict`; the returned REXS ID owns every allocation.
+The experiment appears once in the dashboard. `show`, `status`, `logs`, and `cancel`
+operate on the whole experiment; any constituent Slurm job ID also resolves to it.
+Legacy specs without `rexs` retain their single-job behavior.
+
+```yaml
+version: v2
+tasks:
+  - name: services
+    image: {beaker: cpu-runtime}
+    command: [python, services.py]
+  - name: policy
+    replicas: 4
+    image: {beaker: gpu-runtime}
+    command: [python, serve.py]
+    resources: {gpuCount: 1}
+    envVars:
+      - {name: SERVICE_JOB, value: '${jobs.cpu}'}
+  - name: evaluation
+    image: {beaker: cpu-runtime}
+    command: [python, evaluate.py]
+rexs:
+  allocations:
+    - name: cpu
+      tasks: [services]
+      profile: cpu.yaml
+    - name: policy
+      tasks: [policy]
+      profile: h200.yaml
+      independent_replicas: true
+    - name: evaluation
+      tasks: [evaluation]
+      profile: evaluation.yaml
+  completion_task: evaluation
+```
+
+Profiles resolve relative to the experiment file. Each task belongs to exactly
+one allocation group. `independent_replicas` gives each replica its own Slurm job
+while preserving its logical task name and replica number in logs and its
+`BEAKER_REPLICA_RANK`/`BEAKER_REPLICA_COUNT` environment. Each task also receives
+the common `REXS_EXPERIMENT_ID` and its own `REXS_ALLOCATION_NAME`. Other groups
+compile their tasks into one allocation according to their profile's packing rules.
+`${jobs.cpu}` refers to an earlier allocation; independent groups expose names
+such as `${jobs.policy-0}`. Forward/unknown references fail validation before submission.
+
+REXS validates the complete plan before submitting any job, persists allocations
+under one experiment, and cancels already-submitted jobs if a later submission
+fails. The single-replica `completion_task` must have its own allocation and is
+submitted last. Its generated EXIT/INT/TERM/HUP trap cancels the other allocations;
+the REXS controller also cleans up when it observes completion. Run `rexs server`
+or `rexs refresh` for that controller fallback. Scheduler/SIGKILL failures cannot
+execute a shell trap. Cleanup failures remain visible and can be retried with
+`rexs cancel ID`.
+
+Submission does not wait for resource allocation or application readiness. Put
+service discovery and readiness gates in the workload, so one ready model replica
+can serve evaluation while others queue. A failed replica is visible under its
+allocation; the completion task determines overall success. Without a completion
+task, the experiment completes when all allocations finish, and any failed
+allocation makes the final experiment status a failure.
+
+`rexs validate` reports the allocation plan. `rexs render --output DIRECTORY`
+writes guarded previews; submit the original spec through REXS to resolve real
+job IDs. A portable scheduling example is in
+[`examples/multi-allocation`](examples/multi-allocation/README.md).
+
+The dashboard groups logs into task cards with numbered replica buttons, a shared
+state-color legend, and a fullscreen log viewer. Resource cards show separate
+counts for each GPU type, including mixed-type experiments.

@@ -81,3 +81,16 @@ The dashboard uses a small JSON API:
 The server has no authentication layer. Bind to `127.0.0.1` unless it is
 placed behind an authenticated reverse proxy.
 
+
+## Experiments spanning multiple allocations
+
+A Beaker v2 spec can define `rexs.allocations` with a name, task list, and site
+profile for each group. Set `independent_replicas: true` to schedule replicas as
+separate jobs, and `rexs.completion_task` to name the evaluator that owns cleanup.
+Submit the spec once. All jobs appear under one experiment ID, with unified logs,
+status, resource totals by GPU type, and cancellation. Replica selectors are
+grouped by task; the legend matches experiment and allocation state colors.
+Use Full screen to expand the log viewer.
+
+See the [multi-allocation example](https://github.com/goncalorafaria/rexs/tree/main/examples/multi-allocation)
+for a portable configuration. Existing single-allocation specs remain supported.

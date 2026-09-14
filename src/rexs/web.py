@@ -26,6 +26,13 @@ APP_HTML = r"""<!doctype html>
   --danger: #c42c31;
   --danger-soft: #fdeced;
   --neutral-soft: #eef0f4;
+  --state-running: #21a366;
+  --state-pending: #e3a12a;
+  --state-failed: #e34c5b;
+  --state-completed: #22b8cf;
+  --state-other: #a0a8b5;
+  --state-color: var(--state-other);
+  --state-halo: var(--neutral-soft);
   font-family: Manrope, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 * { box-sizing: border-box; }
@@ -85,12 +92,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
 .status { display: inline-flex; align-items: center; gap: 7px; min-width: 102px; font-size: 12px; font-weight: 750; }
-.status-dot { width: 9px; height: 9px; border-radius: 50%; background: #8991a1; box-shadow: 0 0 0 3px var(--neutral-soft); }
-.status.running .status-dot { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
-.status.pending .status-dot { background: #6b63ce; box-shadow: 0 0 0 3px #efedff; }
-.status.completed .status-dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
-.status.failed .status-dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
-.status.cancelled .status-dot { background: #6e7583; box-shadow: 0 0 0 3px var(--neutral-soft); }
+.status-dot { width:9px; height:9px; border-radius:50%; background:var(--state-color); box-shadow:0 0 0 3px var(--state-halo); }
+.status.running,.log-option.state-running,.event.running { --state-color:var(--state-running); --state-halo:#e8f7ef; }
+.status.pending,.log-option.state-pending,.event.pending { --state-color:var(--state-pending); --state-halo:#fff3df; }
+.status.completed,.log-option.state-completed,.event.completed { --state-color:var(--state-completed); --state-halo:#e5f8fb; }
+.status.failed,.log-option.state-failed,.event.failed { --state-color:var(--state-failed); --state-halo:#fdeced; }
 .empty { padding: 70px 20px; text-align: center; color: var(--muted); }
 .empty-icon { width: 44px; height: 44px; display: grid; place-items: center; margin: 0 auto 12px; border-radius: 50%; background: var(--neutral-soft); font-size: 20px; }
 .error-banner { display: none; padding: 12px 15px; margin-bottom: 18px; border: 1px solid #efb5b8; border-radius: 7px; background: var(--danger-soft); color: #8d2226; font-size: 13px; }
@@ -123,15 +129,49 @@ tbody tr:last-child td { border-bottom: 0; }
 .task-list { display: grid; gap: 10px; }
 .task-row { display: grid; grid-template-columns: minmax(180px, 1fr) 100px minmax(260px, 1.4fr) auto; align-items: center; gap: 12px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 7px; }
 .task-name { font-weight: 750; }
-.log-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 480px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
-.log-nav { padding: 10px; border-right: 1px solid var(--line); background: #fafbfc; }
-.log-option { width: 100%; border: 0; border-radius: 5px; padding: 10px; background: transparent; text-align: left; color: #4d5668; }
-.log-option:hover { background: #eef3fa; }
-.log-option.active { background: var(--primary-soft); color: #1256b5; font-weight: 750; }
-.log-view { min-width: 0; background: #111827; color: #d5dbea; }
-.log-toolbar { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 13px; border-bottom: 1px solid #30384b; background: #182033; }
-.log-toolbar select { margin-left: auto; border: 1px solid #4c5870; border-radius: 4px; padding: 4px 7px; background: #111827; color: white; }
-.log-output { min-height: 430px; max-height: 68vh; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.log-layout { display:grid; grid-template-rows:auto minmax(0,1fr); min-height:220px; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+.log-nav { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:6px; padding:8px; border-bottom:1px solid var(--line); background:#fafbfc; align-content:start; }
+.log-group { min-width:0; border:1px solid var(--line); border-radius:6px; padding:6px; background:white; }
+.log-group.wide { grid-column:span 2; }
+.log-group-label { display:flex; justify-content:space-between; gap:8px; margin:0 0 6px; font-size:12px; font-weight:750; overflow-wrap:anywhere; }
+.log-group-count { color:var(--muted); font-weight:500; }
+.log-replicas { display:flex; flex-wrap:wrap; gap:4px; }
+.log-option { position:relative; width:28px; height:28px; flex:0 0 28px; padding:0; border:1px solid #d9dfe8; border-radius:4px; background:#f8fafc; color:#4d5668; font:600 11px ui-monospace,monospace; text-align:center; }
+.log-option:hover { border-color:var(--primary); background:var(--primary-soft); }
+.log-option:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.log-option.active { border-color:var(--primary); background:var(--primary); color:white; }
+.log-option::after { content:''; position:absolute; right:2px; bottom:2px; width:4px; height:4px; border-radius:50%; background:var(--state-color); }
+.log-view { display:flex; flex-direction:column; min-width:0; min-height:0; background:#111827; color:#d5dbea; }
+.log-toolbar { flex:0 0 42px; min-width:0; display:flex; align-items:center; gap:10px; padding:0 13px; border-bottom:1px solid #30384b; background:#182033; }
+.log-toolbar > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.log-toolbar select { margin-left:auto; flex-shrink:0; border:1px solid #4c5870; border-radius:4px; padding:4px 7px; background:#111827; color:white; }
+.log-output { flex:1; min-height:0; margin:0; padding:12px; overflow:auto; white-space:pre-wrap; word-break:break-word; font:12px/1.55 ui-monospace,monospace; }
+.content:has([data-content="logs"].active) .meta-grid { display:none; }
+.tab-content[data-content="logs"] { padding:12px; }
+.tab-content[data-content="logs"] > .section-title { display:none; }
+.content:has([data-content="logs"].active) { max-width:none; padding:12px 20px; }
+.content:has([data-content="logs"].active) .page-head { align-items:center; margin-bottom:10px; gap:12px; }
+.content:has([data-content="logs"].active) .page-head h1 { margin-top:0 !important; font-size:22px; }
+.content:has([data-content="logs"].active) #back-button { display:none; }
+.content:has([data-content="logs"].active) .detail-status { margin-top:6px; }
+.content:has([data-content="logs"].active) .tab { padding:10px 2px 9px; }
+body:has([data-content="logs"].active) .topbar { height:48px; }
+.log-legend { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; padding:2px 1px 0; color:var(--muted); font-size:10px; }
+.log-legend span { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+.log-legend i { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--state-other); }
+.log-legend .running { background:var(--state-running); }
+.log-legend .queued { background:var(--state-pending); }
+.log-legend .failed { background:var(--state-failed); }
+.log-legend .completed { background:var(--state-completed); }
+.log-legend .selected { width:10px; height:10px; border-radius:2px; background:var(--primary); }
+.log-expand { flex-shrink:0; border:1px solid #4c5870; border-radius:4px; padding:4px 8px; background:#182033; color:#d5dbea; font-size:11px; }
+.log-expand:hover { background:#303e55; }
+#app:fullscreen { width:100vw; height:100dvh; padding:0; background:#111827; }
+#app:fullscreen > :not(.panel) { display:none; }
+#app:fullscreen .tabs { display:none; }
+#app:fullscreen .panel { border:0; }
+#app:fullscreen .tab-content { padding:0; }
+#app:fullscreen .log-layout { height:100dvh !important; border:0; border-radius:0; }
 .config-layout { display: grid; grid-template-columns: minmax(260px, .75fr) minmax(420px, 1.4fr); gap: 18px; }
 .field-card { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .field-row { display: grid; grid-template-columns: minmax(110px, .6fr) minmax(0, 1.4fr); border-bottom: 1px solid var(--line); }
@@ -146,7 +186,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .timeline { position: relative; margin-left: 7px; padding-left: 25px; }
 .timeline:before { content: ""; position: absolute; top: 7px; bottom: 10px; left: 5px; width: 2px; background: var(--line); }
 .event { position: relative; margin: 0 0 23px; }
-.event:before { content: ""; position: absolute; left: -25px; top: 4px; width: 10px; height: 10px; border: 2px solid white; border-radius: 50%; background: #7a8497; box-shadow: 0 0 0 1px #aab1bd; }
+.event:before { content: ""; position: absolute; left: -25px; top: 4px; width: 10px; height: 10px; border: 2px solid white; border-radius: 50%; background: var(--state-color); box-shadow: 0 0 0 1px var(--state-halo); }
 .event-title { font-size: 13px; font-weight: 750; }
 .event-meta, .event-detail { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .loading { display: grid; place-items: center; min-height: 320px; color: var(--muted); }
@@ -177,8 +217,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .page-actions { margin-left: 0; width: 100%; }
   .meta-grid { grid-template-columns: 1fr; }
   .log-layout { grid-template-columns: 1fr; }
-  .log-nav { border-right: 0; border-bottom: 1px solid var(--line); display: flex; overflow-x: auto; }
-  .log-option { min-width: 160px; }
+  .log-nav { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; padding:6px; }
   .task-row { grid-template-columns: 1fr auto; }
   .task-row .path { display: none; }
 }
@@ -400,7 +439,7 @@ function renderList() {
   const query = activeSearch.trim().toLowerCase();
   const rows = experiments.filter(item => filterMatches(item, activeFilter)).filter(item => {
     if (!query) return true;
-    return [item.name, item.id, item.job_id, item.status].some(value => String(value || '').toLowerCase().includes(query));
+    return [item.name, item.id, item.job_id, item.status, ...(item.allocations || []).map(a => a.job_id)].some(value => String(value || '').toLowerCase().includes(query));
   });
   const chips = [
     ['running','Running'], ['failed','Failed and canceled'], ['all','All'],
@@ -409,7 +448,7 @@ function renderList() {
     <tr>
       <td>${statusMarkup(item.status)}</td>
       <td><button class="name-link" data-open="${escapeHtml(item.id)}">${escapeHtml(item.name)}</button><div class="mono muted">${escapeHtml(shortId(item.id))}</div></td>
-      <td class="mono">${escapeHtml(item.job_id || 'Not submitted')}</td>
+      <td class="mono">${escapeHtml(jobLabel(item))}</td>
       <td class="mono" title="Total task replicas">${escapeHtml(item.replica_count ?? '—')}</td>
       <td>${renderResources(item.resources, true)}</td>
       <td class="mono" title="Elapsed execution time reported by Slurm; excludes queue wait">${escapeHtml(formatRuntime(item))}${['SUBMITTED','PENDING'].includes(item.status) ? `<div class="muted" style="font:11px/1.5 sans-serif" title="Slurm estimated start; may change">Start ${escapeHtml(formatStartEstimate(item))}</div>` : ''}</td>
@@ -432,9 +471,16 @@ function renderList() {
 function syncNavigationFilter() {
   document.querySelectorAll('[data-nav-filter]').forEach(item => item.classList.toggle('active', item.dataset.navFilter === activeFilter));
 }
+function jobLabel(item) {
+  return item.allocations?.length ? `${item.allocations.length} allocations` : (item.job_id || 'Not submitted');
+}
+function renderAllocations(item) {
+  if (!item.allocations?.length) return '';
+  return `<h2 class="section-title">Allocations</h2><table><thead><tr><th>Name</th><th>Slurm job</th><th>Status</th></tr></thead><tbody>${item.allocations.map(a => `<tr><td>${escapeHtml(a.name)}${a.completion ? ' · completion' : ''}</td><td class="mono">${escapeHtml(a.job_id || 'Not submitted')}</td><td>${statusMarkup(a.status)}</td></tr>`).join('')}</tbody></table><br>`;
+}
 function metadataCards(item, taskCount, wandbLinks = [], wandbOffline = false) {
   const values = [
-    ['REXS ID', item.id], ['Slurm job', item.job_id || 'Not submitted'], ['W&B', wandbOffline ? 'Offline · no cloud link' : 'No run link captured'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
+    ['REXS ID', item.id], ['Slurm jobs', jobLabel(item)], ['W&B', wandbOffline ? 'Offline · no cloud link' : 'No run link captured'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
   ];
   return values.map(([label,value]) => `<div class="meta-card"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value ${label.includes('ID') || label.includes('job') ? 'mono' : ''}" title="${escapeHtml(value)}">${label === 'W&B' && wandbLinks.length ? wandbLinks.map((url, index) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open run${wandbLinks.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join(' · ') : escapeHtml(value)}</div></div>`).join('');
 }
@@ -447,16 +493,35 @@ function renderFields(value) {
 }
 function renderEvents(events) {
   if (!events.length) return '<div class="empty">No state transitions recorded.</div>';
-  return `<div class="timeline">${events.slice().reverse().map(event => `<div class="event"><div class="event-title">${escapeHtml(statusLabel(event.status))}</div><div class="event-meta">${escapeHtml(formatTime(event.occurred_at))}${event.previous_status ? ` · from ${escapeHtml(statusLabel(event.previous_status))}` : ''}</div>${event.detail ? `<div class="event-detail">${escapeHtml(event.detail)}</div>` : ''}</div>`).join('')}</div>`;
+  return `<div class="timeline">${events.slice().reverse().map(event => `<div class="event ${statusClass(event.status)}"><div class="event-title">${escapeHtml(statusLabel(event.status))}</div><div class="event-meta">${escapeHtml(formatTime(event.occurred_at))}${event.previous_status ? ` · from ${escapeHtml(statusLabel(event.previous_status))}` : ''}</div>${event.detail ? `<div class="event-detail">${escapeHtml(event.detail)}</div>` : ''}</div>`).join('')}</div>`;
 }
-function logPanel(tasks) {
+function fitLogPanel() {
+  const panel = document.querySelector('[data-content="logs"].active .log-layout');
+  if (panel) panel.style.height = `${Math.max(220, window.innerHeight - panel.getBoundingClientRect().top - 12)}px`;
+}
+window.addEventListener('resize', fitLogPanel);
+document.addEventListener('fullscreenchange', () => { fitLogPanel(); const button = document.getElementById('log-expand'); if (button) button.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; });
+function logPanel(tasks, allocations = []) {
   if (!tasks.length) return '<div class="empty">No task replicas were recorded for this experiment.</div>';
   if (!selectedLog || !tasks.some(task => `${task.name}:${task.replica_rank}` === selectedLog)) selectedLog = `${tasks[0].name}:${tasks[0].replica_rank}`;
   const current = tasks.find(task => `${task.name}:${task.replica_rank}` === selectedLog) || tasks[0];
-  return `<div class="log-layout"><div class="log-nav">${tasks.map(task => {
-    const key = `${task.name}:${task.replica_rank}`;
-    return `<button class="log-option ${key === selectedLog ? 'active' : ''}" data-log="${escapeHtml(key)}"><strong>${escapeHtml(task.name)}</strong><br><span class="muted">Replica ${task.replica_rank}${task.exists ? '' : ' · waiting'}</span></button>`;
-  }).join('')}</div><div class="log-view"><div class="log-toolbar"><span class="mono">${escapeHtml(current.log_path || `${current.name}.${current.replica_rank}.log`)}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select></div><pre class="log-output">${renderAnsi(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
+  const groups = new Map();
+  const states = new Map(allocations.map(a => [a.name, a.status]));
+  for (const task of tasks) {
+    if (!groups.has(task.name)) groups.set(task.name, []);
+    groups.get(task.name).push(task);
+  }
+  const navigation = [...groups].map(([name, replicas]) => {
+    replicas.sort((a,b) => a.replica_rank - b.replica_rank);
+    const buttons = replicas.map(task => {
+      const key = `${task.name}:${task.replica_rank}`;
+      const state = states.get(task.allocation) || (task.exists ? 'Log ready' : 'Waiting for log');
+      const label = `${task.name} · replica ${task.replica_rank} · ${state}`;
+      return `<button class="log-option state-${statusClass(state) || 'other'} ${key === selectedLog ? 'active' : ''}" data-log="${escapeHtml(key)}" data-state="${escapeHtml(state)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" aria-pressed="${key === selectedLog}">${task.replica_rank}</button>`;
+    }).join('');
+    return `<section class="log-group ${replicas.length > 8 ? 'wide' : ''}" aria-label="${escapeHtml(name)} replicas"><h3 class="log-group-label"><span>${escapeHtml(name)}</span><span class="log-group-count">${replicas.length}</span></h3><div class="log-replicas">${buttons}</div></section>`;
+  }).join('');
+  return `<div class="log-layout"><nav class="log-nav" aria-label="Task replica logs">${navigation}<div class="log-legend" aria-label="Replica color legend"><span><i class="running"></i>Running</span><span><i class="queued"></i>Queued</span><span><i class="failed"></i>Failed / preempted</span><span><i class="completed"></i>Completed</span><span><i></i>Other / unavailable</span><span><i class="selected"></i>Selected log</span></div></nav><div class="log-view"><div class="log-toolbar"><span class="mono" title="${escapeHtml(current.log_path || '')}">${escapeHtml(current.name)} · replica ${current.replica_rank}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select><button class="log-expand" id="log-expand" type="button">Full screen</button></div><pre class="log-output">${renderAnsi(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
 }
 async function loadDetail(identifier, {quiet=false} = {}) {
   if (!quiet) app.innerHTML = '<div class="loading"><span><i class="spinner"></i>Loading experiment…</span></div>';
@@ -506,8 +571,12 @@ function renderResources(resources, compact = false) {
     node: '<rect x="5" y="3" width="22" height="11" rx="2"/><rect x="5" y="18" width="22" height="11" rx="2"/><path d="M10 8h1m4 0h7M10 23h1m4 0h7"/>'
   };
   const number = n => n == null ? '—' : n.toLocaleString(undefined, {maximumFractionDigits:1});
+  const gpuTypes = Object.entries(resources.gpu_counts || {}).sort(([a],[b]) => a.localeCompare(b));
+  const gpuCards = gpuTypes.length
+    ? gpuTypes.map(([model,count]) => ['gpu', `${number(count)} ${model}`, 'GPUs requested'])
+    : [['gpu', `${number(resources.gpus)} ${resources.gpu_type || 'GPUs'}`, 'GPUs requested']];
   const cards = [
-    ['gpu', `${number(resources.gpus)} ${resources.gpu_type || 'GPUs'}`, 'GPUs across the experiment'],
+    ...gpuCards,
     ['cpu', `${number(resources.cpus)} CPUs`, 'Total CPUs requested'],
     ['memory', resources.memory_all ? 'All memory' : `${number(resources.memory_gib)} GiB`, 'Total host memory'],
     ['node', `${number(resources.nodes)} ${resources.nodes === 1 ? 'node' : 'nodes'}`, 'Compute nodes']
@@ -529,20 +598,21 @@ function renderDetail(detail) {
   const item = detail.experiment;
   document.title = `REXS · ${item.name}`;
   document.getElementById('breadcrumb').innerHTML = '<button class="name-link" id="crumb-home">Experiments</button> / <strong>' + escapeHtml(item.name) + '</strong>';
-  const canCancel = Boolean(item.job_id) && !terminalStatuses.has(item.status);
+  const canCancel = (Boolean(item.job_id) || Boolean(item.allocations?.some(a => a.job_id))) && !terminalStatuses.has(item.status);
   const tabs = [['overview','Overview'],['logs','Logs'],['configuration','Configuration'],['history','History'],['metrics','GPU metrics']];
-  const overview = `${renderResources(detail.resources)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
+  const overview = `${renderResources(detail.resources)}${renderAllocations(item)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
   const configuration = `<div class="config-layout"><div><h2 class="section-title">Experiment fields</h2><div class="field-card">${renderFields(detail.spec)}</div></div><div><h2 class="section-title">Executed YAML</h2><div class="code-wrap"><div class="code-actions"><button class="code-button" id="copy-spec">Copy</button><button class="code-button" id="download-spec">Download</button></div><pre class="spec-code" id="spec-code">${escapeHtml(item.spec_text || '(snapshot unavailable)')}</pre></div></div></div>`;
   app.innerHTML = `
     <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions">${(detail.wandb_links || []).map((url, index, links) => `<a class="button" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">W&amp;B${links.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join('')}<button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>Cancel experiment</button></div></div>
     <div class="meta-grid">${metadataCards(item, detail.tasks.length, detail.wandb_links || [], detail.wandb_offline)}</div>
     <div class="panel"><div class="tabs">${tabs.map(([key,label]) => `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${label}${key === 'logs' ? ` (${detail.tasks.length})` : ''}</button>`).join('')}</div>
       <div class="tab-content ${activeTab === 'overview' ? 'active' : ''}" data-content="overview">${overview}</div>
-      <div class="tab-content ${activeTab === 'logs' ? 'active' : ''}" data-content="logs"><h2 class="section-title">Replica logs</h2>${logPanel(detail.tasks)}</div>
+      <div class="tab-content ${activeTab === 'logs' ? 'active' : ''}" data-content="logs"><h2 class="section-title">Replica logs</h2>${logPanel(detail.tasks, item.allocations)}</div>
       <div class="tab-content ${activeTab === 'configuration' ? 'active' : ''}" data-content="configuration">${configuration}</div>
       <div class="tab-content ${activeTab === 'history' ? 'active' : ''}" data-content="history"><h2 class="section-title">Status history</h2>${renderEvents(detail.events)}</div>
       <div class="tab-content ${activeTab === 'metrics' ? 'active' : ''}" data-content="metrics"><h2 class="section-title">GPU metrics</h2>${renderGpuMetrics(detail.metrics, item.status)}</div>
     </div>`;
+  fitLogPanel();
   const logOutput = app.querySelector('.log-output');
   if (logOutput) {
     const key = JSON.stringify([item.id, selectedLog]);
@@ -559,7 +629,7 @@ function renderDetail(detail) {
     try { await request('/api/refresh', {method:'POST'}); await loadDetail(item.id, {quiet:true}); } catch (error) { setError(error.message); }
   };
   document.getElementById('cancel-button').onclick = async () => {
-    if (!canCancel || !confirm(`Cancel ${item.name} (Slurm job ${item.job_id})?`)) return;
+    if (!canCancel || !confirm(`Cancel ${item.name} and all its Slurm jobs?`)) return;
     const button = document.getElementById('cancel-button'); button.disabled = true; button.textContent = 'Canceling…';
     try { await request(`/api/experiments/${encodeURIComponent(item.id)}/cancel`, {method:'POST'}); await loadDetail(item.id, {quiet:true}); await loadExperiments(); }
     catch (error) { setError(error.message); button.disabled = false; button.textContent = 'Cancel experiment'; }
@@ -567,6 +637,14 @@ function renderDetail(detail) {
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { activeTab = button.dataset.tab; renderDetail(detail); });
   document.querySelectorAll('[data-task-log]').forEach(button => button.onclick = () => { selectedLog = button.dataset.taskLog; activeTab = 'logs'; renderDetail(detail); });
   document.querySelectorAll('[data-log]').forEach(button => button.onclick = () => { selectedLog = button.dataset.log; renderDetail(detail); });
+  const expand = document.getElementById('log-expand');
+  if (expand) expand.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
+  if (expand) expand.onclick = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.getElementById('app').requestFullscreen();
+    } catch (error) { setError(error.message); }
+  };
   const logLines = document.getElementById('log-lines');
   if (logLines) {
     logLines.value = String(logLineCount);

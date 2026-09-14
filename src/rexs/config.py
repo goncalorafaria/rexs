@@ -20,6 +20,7 @@ class SlurmProfile:
     account: str | None = None
     partition: str | None = None
     qos: str | None = None
+    gpu_type: str | None = None
     time_limit: str = "24:00:00"
     cpus_per_task: int = 4
     tasks_per_node: int = 1
@@ -33,6 +34,7 @@ class SlurmProfile:
     run_root: str = ".rexs/runs"
     secret_file: str | None = None
     setup_commands: tuple[str, ...] = ()
+    cleanup_job_ids: tuple[str, ...] = ()
     sbatch: Mapping[str, str | int | bool | None] = field(default_factory=dict)
     images: Mapping[str, str] = field(default_factory=dict)
     datasets: Mapping[str, str] = field(default_factory=dict)
@@ -47,6 +49,13 @@ class SlurmProfile:
             raise ConfigurationError(f"unknown profile fields: {', '.join(unknown)}")
         if "setup_commands" in raw:
             raw["setup_commands"] = tuple(raw["setup_commands"] or ())
+        if "cleanup_job_ids" in raw:
+            jobs = raw["cleanup_job_ids"]
+            if not isinstance(jobs, list) or not all(
+                isinstance(job, str) and re.fullmatch(r"[1-9][0-9]*", job) for job in jobs
+            ):
+                raise ConfigurationError("cleanup_job_ids must be a list of positive Slurm job ID strings")
+            raw["cleanup_job_ids"] = tuple(dict.fromkeys(jobs))
         if "bundled_datasets" in raw:
             if not isinstance(raw["bundled_datasets"], list) or not all(
                 isinstance(item, str) for item in raw["bundled_datasets"]
@@ -56,6 +65,8 @@ class SlurmProfile:
         if isinstance(raw.get("time_limit"), int):
             raw["time_limit"] = _seconds_as_slurm_time(raw["time_limit"])
         profile = cls(**raw)
+        if profile.gpu_type is not None and (not isinstance(profile.gpu_type, str) or not re.fullmatch(r"[A-Za-z0-9_]+", profile.gpu_type)):
+            raise ConfigurationError("profile.gpu_type must be a Slurm GPU type such as h200 or l40s")
         if profile.cpus_per_task < 1:
             raise ConfigurationError("profile.cpus_per_task must be positive")
         if isinstance(profile.tasks_per_node, bool) or not isinstance(profile.tasks_per_node, int) or profile.tasks_per_node < 1:
