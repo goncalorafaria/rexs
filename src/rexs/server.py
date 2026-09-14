@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
-from rexs.auth import USERNAME, dashboard_password
+from rexs.auth import USERNAME, dashboard_password, dashboard_url
 from rexs.controller import Controller
 from rexs.links import wandb_links, wandb_offline
 from rexs.metrics import MetricsCollector
@@ -352,7 +352,8 @@ def serve(
     poller.start()
     threading.Thread(target=_collect_metrics, args=(server,), daemon=True, name="rexs-metrics").start()
     print(f"REXS server listening on http://{host}:{port} (db: {controller.store.path})")
-    print(f"Dashboard login: {USERNAME}; password from REXS_SERVER_PASSWORD or {controller.store.path.parent / 'server.password'}")
+    password = server.expected_credentials.decode().split(":", 1)[1]
+    print(f"Dashboard: {dashboard_url(host, server.server_address[1], password)}", flush=True)
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
@@ -401,7 +402,8 @@ def start_daemon(
             start_new_session=True,
         )
     pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
-    return {"pid": process.pid, "url": f"http://{host}:{port}", "log": str(log_file), "pid_file": str(pid_file)}
+    return {"pid": process.pid, "url": dashboard_url(host, port, dashboard_password(state_dir)),
+            "log": str(log_file), "pid_file": str(pid_file)}
 
 
 def stop_daemon(db_path: str | Path | None = None) -> dict[str, Any]:

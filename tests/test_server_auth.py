@@ -121,3 +121,16 @@ def test_password_login_establishes_session_for_browser_requests(dashboard):
     with pytest.raises(HTTPError) as error:
         urlopen(Request(base + '/api/experiments', headers={'Cookie': session['Cookie'] + 'wrong'}), timeout=5)
     assert error.value.code == 401
+
+
+@pytest.mark.parametrize('host,expected', [('127.0.0.1','127.0.0.1'), ('0.0.0.0','localhost'), ('::','localhost'), ('::1','[::1]')])
+def test_dashboard_url_escapes_credentials(host, expected):
+    from rexs.auth import dashboard_url
+    from urllib.parse import unquote, urlsplit
+
+    url = dashboard_url(host, 8767, 'secret:@/#?% space')
+    assert url.endswith(f'@{expected}:8767/')
+    parsed = urlsplit(url)
+    assert parsed.username == 'rexs'
+    assert unquote(parsed.password) == 'secret:@/#?% space'
+    assert not parsed.query and not parsed.fragment

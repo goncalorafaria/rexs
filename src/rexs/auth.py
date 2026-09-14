@@ -6,6 +6,7 @@ import secrets
 import stat
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 USERNAME = 'rexs'
 
@@ -46,3 +47,12 @@ def dashboard_password(state_dir: Path) -> str:
     if not password.strip():
         raise ValueError(f'dashboard password file is empty: {path}')
     return password
+
+
+def dashboard_url(host: str, port: int, password: str) -> str:
+    """Build a directly usable login URL, escaping credentials as URL components."""
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{quote(USERNAME, safe='')}:{quote(password, safe='')}@{host}:{port}/"
