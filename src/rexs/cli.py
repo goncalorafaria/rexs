@@ -239,6 +239,16 @@ class Rexs:
             "events": controller.store.events(identifier),
         }
 
+    def alerts(self, after: int = 0, limit: int = 100, experiment: str | None = None, db: str | None = None):
+        """Read optional alerts in ID order. Reading never acknowledges or removes them."""
+        return Controller(db).store.alerts(after=after, limit=limit, experiment_id=experiment)
+
+    def extend(self, identifier: str, task: str, replicas: int = 1,
+               strict: bool = False, db: str | None = None) -> dict[str, Any]:
+        """Add independent task replicas to the original unified experiment."""
+        from rexs.extensions import extend
+        return extend(identifier, task, replicas, strict=strict, db=db)
+
     def status(self, identifier: str, refresh: bool = True, db: str | None = None) -> dict[str, Any]:
         """Return the durable status of one tracked experiment."""
 

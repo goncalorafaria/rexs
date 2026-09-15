@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
+
+from rexs.alerts import record_alerts
+
 TERMINAL_STATES = {
     "COMPLETED",
     "FAILED",
@@ -194,6 +198,8 @@ class StateStore:
                 (status, exit_code, finished_at, now, experiment_id),
             )
             self._event(connection, experiment_id, previous, status, detail)
+            row = connection.execute("SELECT * FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+            record_alerts(connection, row, yaml.safe_load(row["spec_text"]) or {}, status)
         return self.get(experiment_id)
 
     def get(self, identifier: str) -> ExperimentRecord:
@@ -279,10 +285,24 @@ class StateStore:
             rows = db.execute(
                 "SELECT * FROM allocations WHERE experiment_id=? ORDER BY ordinal", (experiment_id,)
             ).fetchall()
+        with self.connect() as db:
+            parent = db.execute("SELECT spec_text FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+        policies = (
+            (yaml.safe_load(parent["spec_text"]) or {}).get("rexs", {}).get("failure_policies", {}) if parent else {}
+        )
         result = []
         for row in rows:
             item = dict(row)
             item["tasks"] = json.loads(item.pop("tasks_json"))
+            item["failure_policy"] = policies.get(item["tasks"][0]["name"], {"action": "continue"})
+            with self.connect() as db:
+                item["attempts"] = [
+                    dict(r)
+                    for r in db.execute(
+                        "SELECT attempt,job_id,status,exit_code FROM allocation_attempts WHERE experiment_id=? AND name=? ORDER BY attempt",
+                        (experiment_id, item["name"]),
+                    )
+                ]
             result.append(item)
         return result
 
@@ -323,6 +343,31 @@ class StateStore:
                 (status, job_id, exit_code, script_path, script_sha256, experiment_id, name),
             )
             self._event(db, experiment_id, None, status, f"Allocation {name}: {detail or status}")
+            row = db.execute("SELECT * FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+            allocation = db.execute("SELECT * FROM allocations WHERE experiment_id=? AND name=?", (experiment_id, name)).fetchone()
+            record_alerts(db, row, yaml.safe_load(row["spec_text"]) or {}, status, allocation=allocation)
+
+    def alerts(self, *, after=0, limit=100, experiment_id=None):
+        if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+            raise ValueError("after must be a nonnegative alert ID")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        query = "SELECT * FROM alerts WHERE id > ?"
+        params = [after]
+        if experiment_id:
+            query += " AND experiment_id=?"
+            params.append(self.get(experiment_id).id)
+        query += " ORDER BY id LIMIT ?"
+        params.append(limit)
+        with self.connect() as db:
+            rows = db.execute(query, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item.pop("dedupe_key")
+            item["context"] = json.loads(item.pop("context_json"))
+            result.append(item)
+        return result
 
     def events(self, identifier: str) -> list[dict[str, Any]]:
         experiment = self.get(identifier)
@@ -381,6 +426,11 @@ class StateStore:
                     run_root TEXT NOT NULL, tasks_json TEXT NOT NULL, completion INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(experiment_id,name)
                 );
+                CREATE TABLE IF NOT EXISTS allocation_attempts (
+                    experiment_id TEXT NOT NULL, name TEXT NOT NULL, attempt INTEGER NOT NULL,
+                    job_id TEXT NOT NULL, status TEXT NOT NULL, exit_code TEXT,
+                    PRIMARY KEY(experiment_id,name,attempt)
+                );
                 CREATE TABLE IF NOT EXISTS task_replicas (
                     experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
@@ -388,6 +438,15 @@ class StateStore:
                     PRIMARY KEY (experiment_id, name, replica_rank)
                 );
 
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+                    allocation_name TEXT NOT NULL DEFAULT '', task_name TEXT NOT NULL DEFAULT '',
+                    job_id TEXT, kind TEXT NOT NULL, reason TEXT NOT NULL, context_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS alerts_experiment_idx ON alerts(experiment_id, id);
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,

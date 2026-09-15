@@ -401,3 +401,32 @@ def test_invalid_gpu_type_rejected(gpu_type):
     from rexs.errors import ConfigurationError
     with pytest.raises(ConfigurationError, match="gpu_type"):
         SlurmProfile.from_mapping({"gpu_type": gpu_type})
+
+
+def test_allowed_gpu_types_use_slurm_matching_or_and_untyped_steps(tmp_path):
+    profile = SlurmProfile.from_mapping({'gpu_types': ['l40', 'l40s', 'a40', 'l40']})
+    spec = {'version': 'v2', 'tasks': [{'name': 'judge', 'image': {'docker': 'ubuntu:24.04'},
+            'command': ['true'], 'resources': {'gpuCount': 1}, 'replicas': 3}]}
+    result = compile_experiment(spec, profile=profile)
+    assert '#SBATCH --constraint=[l40|l40s|a40]' in result.script
+    assert '#SBATCH --gpus-per-node=1\n' in result.script
+    assert result.script.count('--gpus-per-task=1') == 3
+    assert '--gpus-per-task=l40' not in result.script
+    script = tmp_path / 'job.sh'
+    script.write_text(result.script)
+    subprocess.run(['bash', '-n', str(script)], check=True)
+    spec['tasks'][0]['resources']['gpuCount'] = 0
+    assert '--constraint=' not in compile_experiment(spec, profile=profile).script
+
+
+@pytest.mark.parametrize('fields', [
+    {'gpu_types': []}, {'gpu_types': 'l40,a40'}, {'gpu_types': ['l40', 3]},
+    {'gpu_types': ['l40|a40']}, {'gpu_types': ['l40\n#SBATCH --exclusive']},
+    {'gpu_types': ['l40'], 'gpu_type': 'a40'},
+    {'gpu_types': ['l40'], 'sbatch': {'constraint': 'a40'}},
+    {'gpu_types': ['l40'], 'sbatch': {'gpus-per-node': 'a40:1'}},
+])
+def test_invalid_allowed_gpu_types_rejected(fields):
+    from rexs.errors import ConfigurationError
+    with pytest.raises(ConfigurationError):
+        SlurmProfile.from_mapping(fields)

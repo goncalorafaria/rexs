@@ -51,6 +51,23 @@ tasks:
   resources:
     gpuCount: 0
 rexs:
+  alerts:
+    tasks:
+      evaluation:
+        completed: true
+        failed: true
+      policy:
+        failed: true
+        failure_reasons: [PREEMPTED, OUT_OF_MEMORY, NODE_FAIL]
+  failure_policies:
+    services:
+      action: fail_experiment
+    judge:
+      action: restart
+      max_restarts: 3
+    policy:
+      action: restart
+      max_restarts: 3
   allocations:
   - name: cpu
     tasks:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from rexs.alerts import validate_alerts
 from rexs.compiler import compile_experiment
 from rexs.config import load_profile
 from rexs.controller import parse_job_id
@@ -47,19 +48,38 @@ class Allocation:
 
 def plan(spec, source, *, default_profile=None):
     settings = spec.get("rexs")
-    if not isinstance(settings, dict) or set(settings) - {"allocations", "completion_task"}:
-        raise ConfigurationError("rexs supports allocations and completion_task")
+    if not isinstance(settings, dict) or set(settings) - {"allocations", "completion_task", "failure_policies", "alerts"}:
+        raise ConfigurationError("rexs supports allocations, completion_task, failure_policies and alerts")
     groups = settings.get("allocations")
+    if groups is None and set(settings) == {"alerts"}:
+        groups = [{"name": "main", "tasks": [task.get("name") for task in spec.get("tasks", [])]}]
     if not isinstance(groups, list) or not groups:
         raise ConfigurationError("rexs.allocations must be a nonempty list")
     tasks = spec.get("tasks", [])
     names = [task.get("name") for task in tasks]
     if any(not isinstance(name, str) or not name for name in names) or len(set(names)) != len(names):
         raise ConfigurationError("Every logical task needs a unique name")
+    validate_alerts(settings.get("alerts", {}), names)
     by_name = dict(zip(names, tasks))
     completion = settings.get("completion_task")
     if completion is not None and completion not in by_name:
         raise ConfigurationError("completion_task must name a logical task")
+    policies = settings.get("failure_policies", {})
+    if not isinstance(policies, dict) or set(policies) - set(names):
+        raise ConfigurationError("failure_policies must map task names to policies")
+    for task_name, policy in policies.items():
+        if not isinstance(policy, dict) or set(policy) - {"action", "max_restarts"}:
+            raise ConfigurationError("Failure policy fields: action, max_restarts")
+        action = policy.get("action")
+        if action not in {"continue", "restart", "fail_experiment"}:
+            raise ConfigurationError("Failure policy action must be continue, restart or fail_experiment")
+        count = policy.get("max_restarts", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ConfigurationError("max_restarts must be a nonnegative integer")
+        if action == "restart" and (count < 1 or task_name == completion):
+            raise ConfigurationError("restart requires max_restarts >= 1 and cannot target the completion task")
+        if action != "restart" and count:
+            raise ConfigurationError("max_restarts only applies to restart")
     assigned, allocation_names, result = set(), set(), []
     base = {key: value for key, value in spec.items() if key not in ("tasks", "rexs")}
     for group in groups:
@@ -115,6 +135,20 @@ def plan(spec, source, *, default_profile=None):
             )
     if assigned != set(names):
         raise ConfigurationError(f"Unassigned tasks: {sorted(set(names) - assigned)}")
+    for allocation in result:
+        assigned_policies = {
+            (policies.get(t["name"], {}).get("action", "continue"), policies.get(t["name"], {}).get("max_restarts", 0))
+            for t in allocation.tasks
+        }
+        if len(assigned_policies) != 1:
+            raise ConfigurationError("Tasks sharing an allocation must use the same failure policy")
+        if next(iter(assigned_policies))[0] == "restart":
+            if any("${jobs." + allocation.name + "}" in str(other.spec) for other in result):
+                raise ConfigurationError(
+                    "Cannot restart an allocation referenced by ${jobs.NAME}; use stable discovery"
+                )
+            if allocation.profile.cleanup_job_ids or allocation.profile.cleanup_job_file:
+                raise ConfigurationError("Cannot restart an allocation with cleanup_job_ids")
     # Completion is submitted last so its trap can own every service job.
     result.sort(key=lambda item: item.completion)
     return result
@@ -167,6 +201,8 @@ def submit(
         image_map=image_map,
         dataset_map=dataset_map,
     )
+    if sbatch_args and any(p.get("action") == "restart" for p in spec["rexs"].get("failure_policies", {}).values()):
+        raise ConfigurationError("Restartable tasks require sbatch options in profiles, not submission arguments")
     store = StateStore(db)
     spec_text = yaml.safe_dump(spec, sort_keys=False)
     digest = lambda text: hashlib.sha256(text.encode()).hexdigest()
@@ -202,7 +238,11 @@ def submit(
         for allocation, _ in compiled:
             profile = allocation.profile
             if allocation.completion:
-                profile = replace(profile, cleanup_job_ids=tuple(jobs.values()))
+                profile = replace(
+                    profile,
+                    cleanup_job_ids=tuple(jobs.values()),
+                    cleanup_job_file=str((directory / "owned-jobs.txt").resolve()),
+                )
             resolved = resolve_jobs(allocation.spec, jobs)
             for task in resolved["tasks"]:
                 env = task.setdefault("envVars", [])
@@ -234,6 +274,8 @@ def submit(
                 ["sbatch", *sbatch_args, str(target)], check=True, text=True, capture_output=True
             )
             jobs[allocation.name] = parse_job_id(completed.stdout)
+            with (directory / "owned-jobs.txt").open("a") as owned:
+                owned.write(jobs[allocation.name] + "\n")
             store.update_allocation(
                 record.id, allocation.name, "SUBMITTED", job_id=jobs[allocation.name], detail=completed.stdout.strip()
             )

@@ -21,6 +21,7 @@ class SlurmProfile:
     partition: str | None = None
     qos: str | None = None
     gpu_type: str | None = None
+    gpu_types: tuple[str, ...] = ()
     time_limit: str = "24:00:00"
     cpus_per_task: int = 4
     tasks_per_node: int = 1
@@ -35,6 +36,7 @@ class SlurmProfile:
     secret_file: str | None = None
     setup_commands: tuple[str, ...] = ()
     cleanup_job_ids: tuple[str, ...] = ()
+    cleanup_job_file: str | None = None
     sbatch: Mapping[str, str | int | bool | None] = field(default_factory=dict)
     images: Mapping[str, str] = field(default_factory=dict)
     datasets: Mapping[str, str] = field(default_factory=dict)
@@ -47,6 +49,18 @@ class SlurmProfile:
         unknown = sorted(set(raw) - known)
         if unknown:
             raise ConfigurationError(f"unknown profile fields: {', '.join(unknown)}")
+        if "gpu_types" in raw:
+            types = raw["gpu_types"]
+            if not isinstance(types, list) or not types or not all(
+                isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_]+", item) for item in types
+            ):
+                raise ConfigurationError("profile.gpu_types must be a nonempty list of GPU node features")
+            raw["gpu_types"] = tuple(dict.fromkeys(types))
+            if raw.get("gpu_type") is not None:
+                raise ConfigurationError("Use gpu_type or gpu_types, not both")
+            conflicting = {"constraint", "C", "gres", "gpus", "G", "gpus-per-node", "gpus-per-task", "gpus-per-socket", "prefer"}
+            if conflicting.intersection(raw.get("sbatch") or {}):
+                raise ConfigurationError("gpu_types cannot be combined with sbatch GPU/constraint overrides")
         if "setup_commands" in raw:
             raw["setup_commands"] = tuple(raw["setup_commands"] or ())
         if "cleanup_job_ids" in raw:
@@ -65,11 +79,17 @@ class SlurmProfile:
         if isinstance(raw.get("time_limit"), int):
             raw["time_limit"] = _seconds_as_slurm_time(raw["time_limit"])
         profile = cls(**raw)
-        if profile.gpu_type is not None and (not isinstance(profile.gpu_type, str) or not re.fullmatch(r"[A-Za-z0-9_]+", profile.gpu_type)):
+        if profile.gpu_type is not None and (
+            not isinstance(profile.gpu_type, str) or not re.fullmatch(r"[A-Za-z0-9_]+", profile.gpu_type)
+        ):
             raise ConfigurationError("profile.gpu_type must be a Slurm GPU type such as h200 or l40s")
         if profile.cpus_per_task < 1:
             raise ConfigurationError("profile.cpus_per_task must be positive")
-        if isinstance(profile.tasks_per_node, bool) or not isinstance(profile.tasks_per_node, int) or profile.tasks_per_node < 1:
+        if (
+            isinstance(profile.tasks_per_node, bool)
+            or not isinstance(profile.tasks_per_node, int)
+            or profile.tasks_per_node < 1
+        ):
             raise ConfigurationError("profile.tasks_per_node must be a positive integer")
         if profile.shared_cpus_per_node is not None:
             value = profile.shared_cpus_per_node

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import logging
 import os
 import re
 import subprocess
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+import yaml
 
 from rexs.state import TERMINAL_STATES, ExperimentRecord, StateStore
 
@@ -60,7 +65,7 @@ class Controller:
             if experiment.allocations:
                 try:
                     updates.extend(self._refresh_allocations(experiment))
-                except (OSError, subprocess.SubprocessError):
+                except (OSError, ValueError, subprocess.SubprocessError):
                     if identifier:
                         raise
                     logger.warning("Could not refresh grouped experiment %s", experiment.id, exc_info=True)
@@ -97,10 +102,28 @@ class Controller:
             logger.warning("Could not refresh scheduled start estimates", exc_info=True)
         return updates
 
+    @contextmanager
+    def _experiment_lock(self, experiment_id):
+        # Serialize refresh/restart and cancel across server and CLI processes.
+        path = self.store.path.parent / f".{self.store.path.name}.{experiment_id}.lock"
+        with path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
     def _refresh_allocations(self, experiment):
+        with self._experiment_lock(experiment.id):
+            experiment = self.store.get(experiment.id)
+            if experiment.status in TERMINAL_STATES | {"GENERATED"}:
+                return []
+            return self._refresh_allocations_locked(experiment)
+
+    def _refresh_allocations_locked(self, experiment):
         updates = []
         for allocation in experiment.allocations:
-            if not allocation["job_id"] or allocation["status"] in TERMINAL_STATES:
+            if not allocation["job_id"] or allocation["status"] in TERMINAL_STATES | {"RESTARTING"}:
                 continue
             try:
                 status, exit_code, detail = self._slurm_status(allocation["job_id"])
@@ -121,6 +144,9 @@ class Controller:
                 experiment.id, completion["status"], exit_code=completion["exit_code"], detail="Completion task exited"
             )
         else:
+            if self._apply_failure_policies(experiment, allocations):
+                return updates
+            allocations = self.store.allocations(experiment.id)
             states = [a["status"] for a in allocations]
             if all(state in TERMINAL_STATES for state in states):
                 failures = [state for state in states if state not in ("COMPLETED", "CANCELLED")]
@@ -134,14 +160,91 @@ class Controller:
             self.store.update_status(experiment.id, status, detail="Aggregate allocation status")
         return updates
 
+    def _apply_failure_policies(self, experiment, allocations):
+        policies = (yaml.safe_load(experiment.spec_text) or {}).get("rexs", {}).get("failure_policies", {})
+        failures = []
+        restart = []
+        for allocation in allocations:
+            policy = policies.get(allocation["tasks"][0]["name"], {})
+            action = policy.get("action", "continue")
+            if allocation["status"] == "RESTARTING":
+                raise ValueError(f"{allocation['name']}: interrupted restart; inspect scheduler before retrying")
+            elif allocation["status"] in TERMINAL_STATES - {"COMPLETED"}:
+                if action == "fail_experiment":
+                    failures.append(f"{allocation['name']}: {allocation['status']}")
+                elif action == "restart":
+                    if len(allocation["attempts"]) >= policy["max_restarts"]:
+                        failures.append(f"{allocation['name']}: restart budget exhausted")
+                    else:
+                        restart.append(allocation)
+        if failures:
+            self._cancel_allocations(experiment.id, allocations)
+            self.store.update_status(experiment.id, "FAILED", detail="; ".join(failures))
+            return True
+        for allocation in restart:
+            self._restart_allocation(experiment.id, allocation)
+        return False
+
+    def _restart_allocation(self, experiment_id, allocation):
+        script = Path(allocation["script_path"])
+        if hashlib.sha256(script.read_bytes()).hexdigest() != allocation["script_sha256"]:
+            raise ValueError(f"Refusing modified restart script: {script}")
+        # Persist intent before sbatch. An interrupted submission is never blindly retried.
+        with self.store.connect() as db:
+            db.execute(
+                "INSERT INTO allocation_attempts VALUES (?,?,?,?,?,?)",
+                (
+                    experiment_id,
+                    allocation["name"],
+                    len(allocation["attempts"]),
+                    allocation["job_id"],
+                    allocation["status"],
+                    allocation["exit_code"],
+                ),
+            )
+            db.execute(
+                "UPDATE allocations SET status='RESTARTING' WHERE experiment_id=? AND name=?",
+                (experiment_id, allocation["name"]),
+            )
+        try:
+            result = self.runner(["sbatch", str(script)], check=True, text=True, capture_output=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            self.store.update_allocation(
+                experiment_id,
+                allocation["name"],
+                "SUBMISSION_FAILED",
+                detail=f"Replacement submission rejected: {error}",
+            )
+            raise
+        job_id = parse_job_id(result.stdout)
+        with (script.parent / "owned-jobs.txt").open("a") as owned:
+            owned.write(job_id + "\n")
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE allocations SET exit_code=NULL WHERE experiment_id=? AND name=?",
+                (experiment_id, allocation["name"]),
+            )
+        self.store.update_allocation(
+            experiment_id,
+            allocation["name"],
+            "SUBMITTED",
+            job_id=job_id,
+            detail=f"Replacement {job_id} for {allocation['job_id']}",
+        )
+
     def _cancel_allocations(self, experiment_id, allocations):
-        active = [a for a in allocations if a["job_id"] and a["status"] not in TERMINAL_STATES]
+        active = [a for a in allocations if a["job_id"] and a["status"] not in TERMINAL_STATES | {"RESTARTING"}]
         if active:
             self.runner(["scancel", *[a["job_id"] for a in active]], check=True, text=True, capture_output=True)
             for allocation in active:
                 self.store.update_allocation(
                     experiment_id, allocation["name"], "CANCELLED", detail="Experiment cleanup"
                 )
+
+        if any(a["status"] == "RESTARTING" for a in allocations):
+            raise ValueError(
+                "Known jobs cancelled, but an interrupted replacement submission needs scheduler reconciliation"
+            )
 
     def refresh_start_estimates(self):
         records = [item for item in self.store.active() if item.job_id and item.status in {"SUBMITTED", "PENDING"}]
@@ -204,8 +307,14 @@ class Controller:
     def cancel(self, identifier: str) -> ExperimentRecord:
         experiment = self.store.get(identifier)
         if experiment.allocations:
-            self._cancel_allocations(experiment.id, experiment.allocations)
-            return self.store.update_status(experiment.id, "CANCELLED", detail="All experiment allocations cancelled")
+            with self._experiment_lock(experiment.id):
+                experiment = self.store.get(experiment.id)
+                if experiment.status in TERMINAL_STATES:
+                    return experiment
+                self._cancel_allocations(experiment.id, experiment.allocations)
+                return self.store.update_status(
+                    experiment.id, "CANCELLED", detail="All experiment allocations cancelled"
+                )
         if not experiment.job_id:
             raise ValueError(f"experiment {experiment.id} has no submitted Slurm job")
         if experiment.status in TERMINAL_STATES:

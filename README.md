@@ -154,6 +154,7 @@ account: research
 partition: gpu
 qos: normal
 gpu_type: h200  # optional; keep GPU type consistent in sbatch and srun
+# Alternatively: gpu_types: [l40, l40s, a40] (matching node features required)
 time_limit: "24:00:00"
 cpus_per_task: 8
 memory: 64G

@@ -107,3 +107,14 @@ def test_cleanup_on_signal(tmp_path, signum):
 def test_cleanup_rejects_non_job_targets(value):
     with pytest.raises(ConfigurationError, match="cleanup_job_ids"):
         SlurmProfile.from_mapping({"cleanup_job_ids": value})
+
+
+def test_cleanup_reads_replacement_jobs_at_exit(tmp_path):
+    script, env = make_script(tmp_path)
+    owned = tmp_path / "owned-jobs.txt"
+    script.write_text(script.read_text().replace("REXS_CLEANUP_JOB_FILE=''", f'REXS_CLEANUP_JOB_FILE="{owned}"'))
+    # Added after compilation: replacements must also be covered by the trap.
+    owned.write_text("303\n--user=other\n999\n")
+    result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr
+    assert [line.split()[-1] for line in (tmp_path / "cancel.log").read_text().splitlines()] == ["101", "202", "303"]

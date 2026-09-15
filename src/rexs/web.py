@@ -99,6 +99,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .status.failed,.log-option.state-failed,.event.failed { --state-color:var(--state-failed); --state-halo:#fdeced; }
 .empty { padding: 70px 20px; text-align: center; color: var(--muted); }
 .empty-icon { width: 44px; height: 44px; display: grid; place-items: center; margin: 0 auto 12px; border-radius: 50%; background: var(--neutral-soft); font-size: 20px; }
+.cancel-notice { display:flex; flex-wrap:wrap; gap:6px 12px; padding:12px 16px; border-bottom:1px solid var(--line); font-size:13px; }
+.cancel-notice.pending { background:#fff3df; color:#765000; }
+.cancel-notice.success { background:#e8f7ef; color:#12613b; }
+.cancel-notice.error { background:#fdeced; color:#8d2226; }
 .error-banner { display: none; padding: 12px 15px; margin-bottom: 18px; border: 1px solid #efb5b8; border-radius: 7px; background: var(--danger-soft); color: #8d2226; font-size: 13px; }
 .error-banner.visible { display: block; }
 .detail-status { margin-top: 12px; }
@@ -134,6 +138,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .log-group { min-width:0; border:1px solid var(--line); border-radius:6px; padding:6px; background:white; }
 .log-group.wide { grid-column:span 2; }
 .log-group-label { display:flex; justify-content:space-between; gap:8px; margin:0 0 6px; font-size:12px; font-weight:750; overflow-wrap:anywhere; }
+.policy-badge { display:inline-flex; align-items:center; gap:4px; vertical-align:middle; color:var(--muted); font-weight:500; }
+.policy-badge svg { width:14px; height:14px; flex-shrink:0; }
+.log-task-heading { display:inline-flex; align-items:center; gap:5px; min-width:0; }
 .log-group-count { color:var(--muted); font-weight:500; }
 .log-replicas { display:flex; flex-wrap:wrap; gap:4px; }
 .log-option { position:relative; width:28px; height:28px; flex:0 0 28px; padding:0; border:1px solid #d9dfe8; border-radius:4px; background:#f8fafc; color:#4d5668; font:600 11px ui-monospace,monospace; text-align:center; }
@@ -281,8 +288,16 @@ let activeSearch = '';
 let activeTab = 'overview';
 let selectedLog = null;
 const logScrollPositions = new Map();
+const cancelNotices = new Map();
 let logLineCount = 200;
 let refreshTimer = null;
+let routeVersion = 0;
+let detailRequestSequence = 0;
+let appliedDetailSequence = 0;
+let listRequestSequence = 0;
+function viewingExperiment(identifier) {
+  return location.pathname.startsWith('/experiment/') && decodeURIComponent(location.pathname.slice('/experiment/'.length)) === identifier;
+}
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
@@ -376,6 +391,27 @@ function setError(message) {
   errorBanner.textContent = message || '';
   errorBanner.classList.toggle('visible', Boolean(message));
 }
+function cancelNotice(id) {
+  const notice = cancelNotices.get(id);
+  if (!notice) return '';
+  return `<div class="cancel-notice ${notice.state}" role="${notice.state === 'error' ? 'alert' : 'status'}" aria-live="polite"><strong>${notice.state === 'pending' ? 'Cancelling…' : notice.state === 'success' ? '✓ Cancellation accepted' : 'Cancellation not confirmed'}</strong><span>${escapeHtml(notice.message)}</span></div>`;
+}
+async function cancelExperiment(detail) {
+  const item = detail.experiment;
+  if (['pending','success'].includes(cancelNotices.get(item.id)?.state)) return;
+  const show = value => { if (location.pathname === `/experiment/${item.id}`) renderDetail(value); };
+  cancelNotices.set(item.id, {state:'pending', message:`Sending cancellation for ${item.name} and its jobs…`});
+  show(detail);
+  try {
+    const result = await request(`/api/experiments/${encodeURIComponent(item.id)}/cancel`, {method:'POST'});
+    if (result.status !== 'CANCELLED') throw new Error('The server did not confirm cancellation.');
+    cancelNotices.set(item.id, {state:'success', message:`Slurm accepted the cancellation request for ${item.name}. Jobs may take a moment to stop.`});
+    show({...detail, experiment:result});
+  } catch (error) {
+    cancelNotices.set(item.id, {state:'error', message:`${error.message} Refresh the experiment status before retrying.`});
+    show(detail);
+  }
+}
 async function request(url, options) {
   const requestUrl = new URL(url, location.origin);
   requestUrl.username = "";
@@ -407,14 +443,19 @@ function updateCounts() {
   });
 }
 async function loadExperiments({refresh=false} = {}) {
+  const version = routeVersion;
+  const sequence = ++listRequestSequence;
+  const current = () => version === routeVersion && sequence === listRequestSequence;
   setError('');
   try {
     if (refresh) await request('/api/refresh', {method: 'POST'});
-    experiments = await request('/api/experiments');
+    const result = await request('/api/experiments');
+    if (!current()) return;
+    experiments = result;
     updateCounts();
     document.getElementById('sync-state').textContent = `Updated ${new Date().toLocaleTimeString()}`;
     if (location.pathname === '/') renderList();
-  } catch (error) { setError(error.message); }
+  } catch (error) { if (current()) setError(error.message); }
 }
 function formatStartEstimate(item) {
   const stamp = Date.parse(item.estimated_start_at || '');
@@ -474,9 +515,25 @@ function syncNavigationFilter() {
 function jobLabel(item) {
   return item.allocations?.length ? `${item.allocations.length} allocations` : (item.job_id || 'Not submitted');
 }
+function failurePolicyInfo(policy) {
+  const actions = {
+    restart: {label:'Restart', description:'Replace failed replicas, up to the configured retry limit', path:'M20 7v5h-5 M20 12a8 8 0 1 0-2 5'},
+    fail_experiment: {label:'Fail experiment', description:'A task failure stops the whole experiment', path:'M8 3h8l5 5v8l-5 5H8l-5-5V8Z M12 7v6 M12 16v1'},
+    continue: {label:'Continue', description:'No automatic restart or fail-fast; other tasks keep running', path:'M4 12h16 M14 6l6 6-6 6'}
+  };
+  return actions[policy?.action] || actions.continue;
+}
+function failurePolicyBadge(policy, withLabel = false) {
+  const info = failurePolicyInfo(policy);
+  const label = `${info.label}: ${info.description}`;
+  return `<span class="policy-badge" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${info.path}"/></svg>${withLabel ? escapeHtml(info.label) : ''}</span>`;
+}
+function failurePolicyLegend() {
+  return `<div class="log-legend" aria-label="Task failure policy legend"><span>On failure:</span>${['restart', 'fail_experiment', 'continue'].map(action => failurePolicyBadge({action}, true)).join('')}</div>`;
+}
 function renderAllocations(item) {
   if (!item.allocations?.length) return '';
-  return `<h2 class="section-title">Allocations</h2><table><thead><tr><th>Name</th><th>Slurm job</th><th>Status</th></tr></thead><tbody>${item.allocations.map(a => `<tr><td>${escapeHtml(a.name)}${a.completion ? ' · completion' : ''}</td><td class="mono">${escapeHtml(a.job_id || 'Not submitted')}</td><td>${statusMarkup(a.status)}</td></tr>`).join('')}</tbody></table><br>`;
+  return `<h2 class="section-title">Allocations</h2><table><thead><tr><th>Name</th><th>Slurm job</th><th>Status</th><th>On failure</th></tr></thead><tbody>${item.allocations.map(a => `<tr><td>${escapeHtml(a.name)}${a.completion ? ' · completion' : ''}</td><td class="mono">${escapeHtml(a.job_id || 'Not submitted')}</td><td>${statusMarkup(a.status)}</td><td>${failurePolicyBadge(a.failure_policy, true)}${a.failure_policy?.action === 'restart' ? ` · ${(a.attempts || []).length}/${a.failure_policy.max_restarts} restarts` : ''}${a.attempts?.length ? `<div class="muted">Previous jobs: ${a.attempts.map(t => escapeHtml(t.job_id)).join(', ')}</div>` : ''}${a.status === 'RESTARTING' ? '<div class="muted">Recovery pending; an interrupted submission needs operator review.</div>' : ''}</td></tr>`).join('')}</tbody></table><br>`;
 }
 function metadataCards(item, taskCount, wandbLinks = [], wandbOffline = false) {
   const values = [
@@ -507,6 +564,7 @@ function logPanel(tasks, allocations = []) {
   const current = tasks.find(task => `${task.name}:${task.replica_rank}` === selectedLog) || tasks[0];
   const groups = new Map();
   const states = new Map(allocations.map(a => [a.name, a.status]));
+  const policies = new Map(allocations.map(a => [a.name, a.failure_policy]));
   for (const task of tasks) {
     if (!groups.has(task.name)) groups.set(task.name, []);
     groups.get(task.name).push(task);
@@ -516,20 +574,32 @@ function logPanel(tasks, allocations = []) {
     const buttons = replicas.map(task => {
       const key = `${task.name}:${task.replica_rank}`;
       const state = states.get(task.allocation) || (task.exists ? 'Log ready' : 'Waiting for log');
-      const label = `${task.name} · replica ${task.replica_rank} · ${state}`;
+      const label = `${task.name} · replica ${task.replica_rank} · ${state} · ${failurePolicyInfo(policies.get(task.allocation)).label}`;
       return `<button class="log-option state-${statusClass(state) || 'other'} ${key === selectedLog ? 'active' : ''}" data-log="${escapeHtml(key)}" data-state="${escapeHtml(state)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" aria-pressed="${key === selectedLog}">${task.replica_rank}</button>`;
     }).join('');
-    return `<section class="log-group ${replicas.length > 8 ? 'wide' : ''}" aria-label="${escapeHtml(name)} replicas"><h3 class="log-group-label"><span>${escapeHtml(name)}</span><span class="log-group-count">${replicas.length}</span></h3><div class="log-replicas">${buttons}</div></section>`;
+    const groupPolicies = [...new Set(replicas.map(task => policies.get(task.allocation)?.action || 'continue'))];
+    return `<section class="log-group ${replicas.length > 8 ? 'wide' : ''}" aria-label="${escapeHtml(name)} replicas"><h3 class="log-group-label"><span class="log-task-heading">${groupPolicies.map(action => failurePolicyBadge({action})).join('')}${escapeHtml(name)}</span><span class="log-group-count">${replicas.length}</span></h3><div class="log-replicas">${buttons}</div></section>`;
   }).join('');
-  return `<div class="log-layout"><nav class="log-nav" aria-label="Task replica logs">${navigation}<div class="log-legend" aria-label="Replica color legend"><span><i class="running"></i>Running</span><span><i class="queued"></i>Queued</span><span><i class="failed"></i>Failed / preempted</span><span><i class="completed"></i>Completed</span><span><i></i>Other / unavailable</span><span><i class="selected"></i>Selected log</span></div></nav><div class="log-view"><div class="log-toolbar"><span class="mono" title="${escapeHtml(current.log_path || '')}">${escapeHtml(current.name)} · replica ${current.replica_rank}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select><button class="log-expand" id="log-expand" type="button">Full screen</button></div><pre class="log-output">${renderAnsi(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
+  return `<div class="log-layout"><nav class="log-nav" aria-label="Task replica logs">${navigation}<div class="log-legend" aria-label="Replica color legend"><span><i class="running"></i>Running</span><span><i class="queued"></i>Queued</span><span><i class="failed"></i>Failed / preempted</span><span><i class="completed"></i>Completed</span><span><i></i>Other / unavailable</span><span><i class="selected"></i>Selected log</span></div>${failurePolicyLegend()}</nav><div class="log-view"><div class="log-toolbar"><span class="mono" title="${escapeHtml(current.log_path || '')}">${escapeHtml(current.name)} · replica ${current.replica_rank}</span><select id="log-lines" aria-label="Recent log lines"><option value="200">200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option><option value="5000">5,000 lines</option></select><button class="log-expand" id="log-expand" type="button">Full screen</button></div><pre class="log-output">${renderAnsi(current.content || (current.exists ? '(empty log)' : 'Log file has not been created yet.'))}</pre></div></div>`;
 }
 async function loadDetail(identifier, {quiet=false} = {}) {
+  if (!viewingExperiment(identifier)) return;
+  const version = routeVersion;
+  const sequence = ++detailRequestSequence;
+  const current = () => version === routeVersion && viewingExperiment(identifier) && sequence > appliedDetailSequence;
   if (!quiet) app.innerHTML = '<div class="loading"><span><i class="spinner"></i>Loading experiment…</span></div>';
   setError('');
   try {
     const detail = await request(`/api/experiments/${encodeURIComponent(identifier)}?lines=${logLineCount}`);
+    if (!current()) return;
+    appliedDetailSequence = sequence;
     renderDetail(detail);
-  } catch (error) { setError(error.message); app.innerHTML = '<div class="empty">Experiment could not be loaded.</div>'; }
+  } catch (error) {
+    if (!current()) return;
+    appliedDetailSequence = sequence;
+    setError(error.message);
+    if (!quiet) app.innerHTML = '<div class="empty">Experiment could not be loaded.</div>';
+  }
 }
 function gpuSparkline(points, color, maximum, extent, unit) {
   points = (points || []).filter(p => p.length === 2 && p.every(Number.isFinite));
@@ -598,14 +668,16 @@ function renderDetail(detail) {
   const item = detail.experiment;
   document.title = `REXS · ${item.name}`;
   document.getElementById('breadcrumb').innerHTML = '<button class="name-link" id="crumb-home">Experiments</button> / <strong>' + escapeHtml(item.name) + '</strong>';
-  const canCancel = (Boolean(item.job_id) || Boolean(item.allocations?.some(a => a.job_id))) && !terminalStatuses.has(item.status);
+  const cancelling = cancelNotices.get(item.id)?.state === 'pending';
+  const cancelAccepted = cancelNotices.get(item.id)?.state === 'success';
+  const canCancel = !cancelling && !cancelAccepted && (Boolean(item.job_id) || Boolean(item.allocations?.some(a => a.job_id))) && !terminalStatuses.has(item.status);
   const tabs = [['overview','Overview'],['logs','Logs'],['configuration','Configuration'],['history','History'],['metrics','GPU metrics']];
-  const overview = `${renderResources(detail.resources)}${renderAllocations(item)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
+  const overview = `${renderResources(detail.resources)}${renderAllocations(item)}<h2 class="section-title">Task replicas</h2><div class="task-list">${detail.tasks.length ? detail.tasks.map(task => `<div class="task-row"><div><div class="task-name">${failurePolicyBadge(item.allocations?.find(a => a.name === task.allocation)?.failure_policy)} ${escapeHtml(task.name)}</div><div class="muted">Replica ${task.replica_rank}</div></div><div>${task.exists ? '<span style="color:var(--success)">● Log ready</span>' : '<span class="muted">○ Waiting</span>'}</div><div class="mono muted path">${escapeHtml(task.result_path || 'Result path pending')}</div><button class="button" data-task-log="${escapeHtml(`${task.name}:${task.replica_rank}`)}">Logs</button></div>`).join('') : '<div class="empty">No task replicas recorded.</div>'}</div>`;
   const configuration = `<div class="config-layout"><div><h2 class="section-title">Experiment fields</h2><div class="field-card">${renderFields(detail.spec)}</div></div><div><h2 class="section-title">Executed YAML</h2><div class="code-wrap"><div class="code-actions"><button class="code-button" id="copy-spec">Copy</button><button class="code-button" id="download-spec">Download</button></div><pre class="spec-code" id="spec-code">${escapeHtml(item.spec_text || '(snapshot unavailable)')}</pre></div></div></div>`;
   app.innerHTML = `
-    <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions">${(detail.wandb_links || []).map((url, index, links) => `<a class="button" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">W&amp;B${links.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join('')}<button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>Cancel experiment</button></div></div>
+    <div class="page-head"><div><button class="name-link" id="back-button">← Experiments</button><h1 style="margin-top:13px">${escapeHtml(item.name)}</h1><div class="detail-status">${statusMarkup(item.status)}</div></div><div class="page-actions">${(detail.wandb_links || []).map((url, index, links) => `<a class="button" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">W&amp;B${links.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join('')}<button class="button" id="detail-refresh">↻ Refresh</button><button class="button danger" id="cancel-button" ${canCancel ? '' : 'disabled'}>${cancelling ? 'Cancelling…' : cancelAccepted ? 'Cancellation accepted' : 'Cancel experiment'}</button></div></div>
     <div class="meta-grid">${metadataCards(item, detail.tasks.length, detail.wandb_links || [], detail.wandb_offline)}</div>
-    <div class="panel"><div class="tabs">${tabs.map(([key,label]) => `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${label}${key === 'logs' ? ` (${detail.tasks.length})` : ''}</button>`).join('')}</div>
+    <div class="panel">${cancelNotice(item.id)}<div class="tabs">${tabs.map(([key,label]) => `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${label}${key === 'logs' ? ` (${detail.tasks.length})` : ''}</button>`).join('')}</div>
       <div class="tab-content ${activeTab === 'overview' ? 'active' : ''}" data-content="overview">${overview}</div>
       <div class="tab-content ${activeTab === 'logs' ? 'active' : ''}" data-content="logs"><h2 class="section-title">Replica logs</h2>${logPanel(detail.tasks, item.allocations)}</div>
       <div class="tab-content ${activeTab === 'configuration' ? 'active' : ''}" data-content="configuration">${configuration}</div>
@@ -626,13 +698,12 @@ function renderDetail(detail) {
   document.getElementById('crumb-home').onclick = () => navigate('/');
   document.getElementById('back-button').onclick = () => navigate('/');
   document.getElementById('detail-refresh').onclick = async () => {
-    try { await request('/api/refresh', {method:'POST'}); await loadDetail(item.id, {quiet:true}); } catch (error) { setError(error.message); }
+    const version = routeVersion;
+    try { await request('/api/refresh', {method:'POST'}); if (version === routeVersion) await loadDetail(item.id, {quiet:true}); } catch (error) { if (version === routeVersion) setError(error.message); }
   };
   document.getElementById('cancel-button').onclick = async () => {
     if (!canCancel || !confirm(`Cancel ${item.name} and all its Slurm jobs?`)) return;
-    const button = document.getElementById('cancel-button'); button.disabled = true; button.textContent = 'Canceling…';
-    try { await request(`/api/experiments/${encodeURIComponent(item.id)}/cancel`, {method:'POST'}); await loadDetail(item.id, {quiet:true}); await loadExperiments(); }
-    catch (error) { setError(error.message); button.disabled = false; button.textContent = 'Cancel experiment'; }
+    await cancelExperiment(detail);
   };
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { activeTab = button.dataset.tab; renderDetail(detail); });
   document.querySelectorAll('[data-task-log]').forEach(button => button.onclick = () => { selectedLog = button.dataset.taskLog; activeTab = 'logs'; renderDetail(detail); });
@@ -658,25 +729,31 @@ function renderDetail(detail) {
   };
 }
 async function renderRoute() {
+  const version = ++routeVersion;
   clearInterval(refreshTimer);
+  refreshTimer = null;
   setError('');
   if (location.pathname.startsWith('/experiment/')) {
     const identifier = decodeURIComponent(location.pathname.slice('/experiment/'.length));
     if (!experiments.length) await loadExperiments();
+    if (version !== routeVersion) return;
     await loadDetail(identifier);
+    if (version !== routeVersion) return;
     refreshTimer = setInterval(() => loadDetail(identifier, {quiet:true}), 5000);
   } else {
     if (location.pathname !== '/') history.replaceState({}, '', '/');
     if (!experiments.length) await loadExperiments(); else renderList();
+    if (version !== routeVersion) return;
     refreshTimer = setInterval(() => loadExperiments(), 5000);
   }
 }
 document.getElementById('refresh-button').onclick = async () => {
+  const version = routeVersion;
   const button = document.getElementById('refresh-button'); button.disabled = true;
   try {
     if (location.pathname.startsWith('/experiment/')) {
       await request('/api/refresh', {method:'POST'});
-      await loadDetail(decodeURIComponent(location.pathname.slice('/experiment/'.length)), {quiet:true});
+      if (version === routeVersion) await loadDetail(decodeURIComponent(location.pathname.slice('/experiment/'.length)), {quiet:true});
     } else await loadExperiments({refresh:true});
   } finally { button.disabled = false; }
 };

@@ -182,6 +182,15 @@ class RexsHandler(BaseHTTPRequestHandler):
             if path == "/" or path.startswith("/experiment/"):
                 self._text(APP_HTML, content_type="text/html; charset=utf-8")
                 return
+            if path == "/api/alerts":
+                params = parse_qs(parsed.query)
+                rows = self.server.controller.store.alerts(
+                    after=int(params.get("after", ["0"])[0]),
+                    limit=int(params.get("limit", ["100"])[0]),
+                    experiment_id=params.get("experiment", [None])[0],
+                )
+                self._json({"alerts": rows, "next_after": rows[-1]["id"] if rows else int(params.get("after", ["0"])[0])})
+                return
             if path == "/api/experiments":
                 params = parse_qs(parsed.query)
                 statuses = {

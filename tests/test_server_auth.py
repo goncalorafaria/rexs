@@ -135,3 +135,16 @@ def test_dashboard_url_escapes_credentials(host, expected):
     assert parsed.username == 'rexs'
     assert unquote(parsed.password) == 'secret:@/#?% space'
     assert not parsed.query and not parsed.fragment
+
+
+def test_alert_feed_requires_auth_and_is_passive(dashboard):
+    base, headers, calls = dashboard
+    with pytest.raises(HTTPError) as error:
+        urlopen(Request(base + '/api/alerts'), timeout=5)
+    assert error.value.code == 401
+    for _ in range(2):
+        with urlopen(Request(base + '/api/alerts?after=42&limit=10', headers=headers), timeout=5) as response:
+            assert json.load(response) == {'alerts': [], 'next_after': 42}
+    assert calls == []
+    with pytest.raises(HTTPError):
+        urlopen(Request(base + '/api/alerts?limit=-1', headers=headers), timeout=5)
