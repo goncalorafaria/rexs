@@ -177,6 +177,9 @@ def test_http_api_filters_and_cancels_experiments(tmp_path: Path) -> None:
         with urlopen(request, timeout=5) as response:
             cancelled = json.load(response)
         assert cancelled["status"] == "CANCELLED"
+        detail = store.events(record.id)[-1]["detail"]
+        assert "authenticated HTTP" in detail and "127.0.0.1" in detail
+        assert "Authorization" not in detail
         assert commands == [["scancel", "12345"]]
         with pytest.raises(HTTPError) as error:
             urlopen(request, timeout=5)

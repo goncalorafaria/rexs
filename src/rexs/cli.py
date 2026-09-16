@@ -244,10 +244,11 @@ class Rexs:
         return Controller(db).store.alerts(after=after, limit=limit, experiment_id=experiment)
 
     def extend(self, identifier: str, task: str, replicas: int = 1,
-               strict: bool = False, db: str | None = None) -> dict[str, Any]:
+               strict: bool = False, db: str | None = None,
+               profile: str | None = None, overrides: str | None = None) -> dict[str, Any]:
         """Add independent task replicas to the original unified experiment."""
         from rexs.extensions import extend
-        return extend(identifier, task, replicas, strict=strict, db=db)
+        return extend(identifier, task, replicas, strict=strict, db=db, profile=profile, overrides=overrides)
 
     def status(self, identifier: str, refresh: bool = True, db: str | None = None) -> dict[str, Any]:
         """Return the durable status of one tracked experiment."""
@@ -267,9 +268,14 @@ class Rexs:
         lines: int = 200,
         follow: bool = False,
         db: str | None = None,
-    ) -> list[dict[str, object]] | None:
-        """Read or follow per-replica logs for an experiment."""
+        paths: bool = False,
+    ) -> list[dict[str, object]] | str | None:
+        """Read/follow logs, or list current log paths by task with --paths."""
 
+        if paths:
+            if follow:
+                raise ValueError("--paths and --follow cannot be combined")
+            return self.log_paths(identifier, task=task, replica=replica, db=db)
         controller = Controller(db)
         records = controller.logs(identifier, task=task, replica=replica, lines=lines)
         if not follow:
@@ -279,6 +285,33 @@ class Rexs:
             raise RexsError("no matching log files exist yet")
         subprocess.run(["tail", "-n", str(lines), "-F", *paths], check=False)
         return None
+
+    def log_paths(
+        self,
+        identifier: str,
+        task: str | None = None,
+        replica: int | None = None,
+        db: str | None = None,
+    ) -> str:
+        """List current-attempt log paths by task/replica, without reading logs or refreshing jobs."""
+        records = [
+            record for record in Controller(db).store.tasks(identifier)
+            if (task is None or record.name == task)
+            and (replica is None or record.replica_rank == replica)
+        ]
+        if not records:
+            return "No matching task replicas."
+        output = []
+        previous = None
+        for record in sorted(records, key=lambda item: (item.name, item.replica_rank)):
+            if record.name != previous:
+                output.append(f"{record.name}:")
+                previous = record.name
+            path = Path(record.log_path).expanduser().absolute() if record.log_path else None
+            availability = "" if path and path.is_file() else " [not created yet]"
+            output.append(f"  replica {record.replica_rank} | job {record.job_id or '-'}{availability}")
+            output.append(f"    {path if path else '(no log path assigned)'}")
+        return "\n".join(output)
 
     def cancel(self, identifier: str, db: str | None = None) -> dict[str, Any]:
         """Cancel a tracked Slurm experiment and record the transition."""

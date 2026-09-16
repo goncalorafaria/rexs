@@ -304,7 +304,7 @@ class Controller:
                             "UPDATE experiments SET runtime_seconds=? WHERE id=?", (int(fields[1]), ids[fields[0]])
                         )
 
-    def cancel(self, identifier: str) -> ExperimentRecord:
+    def cancel(self, identifier: str, *, source: str = "local controller/CLI") -> ExperimentRecord:
         experiment = self.store.get(identifier)
         if experiment.allocations:
             with self._experiment_lock(experiment.id):
@@ -313,7 +313,7 @@ class Controller:
                     return experiment
                 self._cancel_allocations(experiment.id, experiment.allocations)
                 return self.store.update_status(
-                    experiment.id, "CANCELLED", detail="All experiment allocations cancelled"
+                    experiment.id, "CANCELLED", detail=f"All experiment allocations cancelled; source={source}"
                 )
         if not experiment.job_id:
             raise ValueError(f"experiment {experiment.id} has no submitted Slurm job")
@@ -323,7 +323,7 @@ class Controller:
         return self.store.update_status(
             experiment.id,
             "CANCELLED",
-            detail=f"scancel requested for job {experiment.job_id}",
+            detail=f"scancel requested for job {experiment.job_id}; source={source}",
         )
 
     def logs(

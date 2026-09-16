@@ -30,3 +30,32 @@ def test_beaker_interceptor_renders_without_submitting(monkeypatch, tmp_path, ca
     result = json.loads(capsys.readouterr().out)
     assert result['submitted'] is False
     assert '/images/runtime.sif' in spec.with_suffix('.sbatch').read_text()
+
+
+def test_log_paths_groups_filters_and_marks_missing_files(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from rexs import cli
+
+    existing = tmp_path / 'inference.0.log'
+    existing.write_text('log contents must not appear')
+    missing = tmp_path / 'inference.1.log'
+    records = [
+        SimpleNamespace(name='trainer', replica_rank=0, job_id='123', log_path=None),
+        SimpleNamespace(name='inference', replica_rank=1, job_id='125', log_path=str(missing)),
+        SimpleNamespace(name='inference', replica_rank=0, job_id='124', log_path=str(existing)),
+    ]
+    # Only metadata access is available: no refresh or log-reading operation.
+    monkeypatch.setattr(cli, 'Controller', lambda db: SimpleNamespace(
+        store=SimpleNamespace(tasks=lambda identifier: records)))
+    main(['logs', 'run', '--paths'])
+    output = capsys.readouterr().out
+    assert output.index('inference:') < output.index('trainer:')
+    assert output.index('replica 0 | job 124') < output.index('replica 1 | job 125')
+    assert str(existing) in output
+    assert 'job 125 [not created yet]' in output
+    assert 'log contents' not in output
+    main(['logs', 'run', '--paths', '--task=inference', '--replica=0'])
+    output = capsys.readouterr().out
+    assert str(existing) in output and str(missing) not in output and 'trainer:' not in output
+    assert Rexs().log_paths('run', task='absent') == 'No matching task replicas.'

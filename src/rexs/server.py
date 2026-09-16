@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -247,7 +248,10 @@ class RexsHandler(BaseHTTPRequestHandler):
                 identifier = path[len(prefix) : -len(suffix)].rstrip("/")
                 if not identifier:
                     raise ValueError("experiment identifier is required")
-                experiment = self.server.controller.cancel(identifier)
+                source = json.dumps({"channel": "authenticated HTTP", "peer": self.client_address[0],
+                                     "user_agent": self.headers.get("User-Agent", "")[:256]})
+                self.log_message("Cancellation requested experiment=%s source=%s", identifier, source)
+                experiment = self.server.controller.cancel(identifier, source=source)
                 self._json(experiment.as_dict())
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -308,7 +312,7 @@ if(response.ok)location.reload();else error.textContent='Sign-in failed. Check y
         return False
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write(f"[rexs-server] {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"[rexs-server] {datetime.now(UTC).isoformat()} {self.address_string()} {fmt % args}\n")
 
     def _experiment(self, identifier: str, query: str) -> dict[str, Any]:
         params = parse_qs(query)
