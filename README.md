@@ -112,6 +112,8 @@ rexs submit experiment.yaml --profile profile.yaml --name my-run --strict
 rexs experiments                 # queued and running only
 rexs experiments --all           # include finished experiments
 rexs status 123456
+rexs logs 123456 --paths                   # log paths grouped by task and replica
+rexs logs 123456 --paths --task=inference  # only inference replicas
 rexs logs 123456 --task=trainer --replica=0
 rexs cancel 123456
 ```
@@ -369,3 +371,17 @@ job IDs. A portable scheduling example is in
 The dashboard groups logs into task cards with numbered replica buttons, a shared
 state-color legend, and a fullscreen log viewer. Resource cards show separate
 counts for each GPU type, including mixed-type experiments.
+
+Cancellation events record whether the request came from the local controller/CLI
+or authenticated HTTP. HTTP audit entries include the peer address and bounded
+User-Agent, never authentication headers or cookies; server access logs include UTC
+timestamps. A forwarded localhost address/shared dashboard login does not identify
+a person. Cancellation remains an explicit action; model errors use failure-policy
+events instead.
+
+For heterogeneous capacity in an active unified experiment, `rexs extend ID TASK
+--replicas N --profile /absolute/profile.yaml --overrides /absolute/override.yaml`
+can override the profile and merge `resources` and `envVars` into the new replicas.
+Existing allocations and the base task template remain unchanged. Added replicas
+keep unique ranks, the parent experiment ID, and parent restart/cleanup handling;
+their resolved specs and scripts preserve the override for restarts.

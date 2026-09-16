@@ -16,7 +16,7 @@ from rexs.errors import ConfigurationError, RexsError
 from rexs.state import TERMINAL_STATES
 
 
-def extend(identifier, task, replicas=1, *, db=None, strict=False):
+def extend(identifier, task, replicas=1, *, db=None, strict=False, profile=None, overrides=None):
     """Add replicas (not a target count), keeping the original experiment ID."""
     if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
         raise ConfigurationError('replicas must be a positive integer')
@@ -38,6 +38,19 @@ def extend(identifier, task, replicas=1, *, db=None, strict=False):
         first = max(t['rank'] for t in existing) + 1
         count = first + replicas
         template = copy.deepcopy(next(t for t in spec['tasks'] if t['name'] == task))
+        group = copy.deepcopy(group)
+        if profile:
+            group['profile'] = str(Path(profile).resolve())
+        if overrides:
+            override = yaml.safe_load(Path(overrides).read_text())
+            if not isinstance(override, dict) or set(override) - {'resources', 'envVars'}:
+                raise ConfigurationError('Extension overrides support only resources and envVars')
+            if 'resources' in override:
+                template.setdefault('resources', {}).update(override['resources'])
+            if 'envVars' in override:
+                values = {e['name']: e for e in template.get('envVars', [])}
+                values.update({e['name']: e for e in override['envVars']})
+                template['envVars'] = list(values.values())
         template['replicas'] = 1
         small = {'version': spec['version'], 'tasks': [template], 'rexs': {'allocations': [group]}}
         policies = spec['rexs'].get('failure_policies', {})

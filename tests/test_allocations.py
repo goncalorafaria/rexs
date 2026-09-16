@@ -370,12 +370,22 @@ def test_alert_only_spec_uses_one_allocation(bundle, monkeypatch):
     assert alert['task_name'] == 'evaluation'
 
 
-def test_extend_keeps_parent_and_unique_ranks(bundle, monkeypatch):
+@pytest.mark.parametrize("custom", [False, True])
+def test_extend_keeps_parent_and_unique_ranks(bundle, monkeypatch, custom):
     source, _, db = bundle
     _jobs, cancelled = fake_submit(monkeypatch)
     parent = Rexs().submit(str(source), db=db, strict=True)
     monkeypatch.setattr(Controller, '_slurm_status', lambda self, job: ('RUNNING', None, 'running'))
-    result = Rexs().extend(parent['id'], task='policy', replicas=2, db=db, strict=True)
+    options = {}
+    if custom:
+        override = source.parent / 'override.yaml'
+        override.write_text(yaml.safe_dump({'resources': {'gpuCount': 1},
+            'envVars': [{'name': 'TP_CONFIG', 'value': 'tp1.toml'}]}))
+        profile = source.parent / 'h200.yaml'
+        profile.write_text(yaml.safe_dump({'gpu_type': 'h200', 'images': {'runtime': '/tmp/runtime.sif'},
+                                         'run_root': str(source.parent / 'runs')}))
+        options = {'overrides': str(override), 'profile': str(profile)}
+    result = Rexs().extend(parent['id'], task='policy', replicas=2, db=db, strict=True, **options)
     store = StateStore(db)
     assert result['id'] == parent['id'] and len(store.list()) == 1
     assert len(result['allocations']) == 6
@@ -384,6 +394,10 @@ def test_extend_keeps_parent_and_unique_ranks(bundle, monkeypatch):
     for a in result['allocations'][-2:]:
         script = Path(a['script_path']).read_text()
         assert parent['id'] in script and '700' in script
+        if custom:
+            assert '--gpus-per-node=h200:1' in script and 'tp1.toml' in script
+    original = yaml.safe_load(store.get(parent['id']).spec_text)
+    assert 'resources' not in next(t for t in original['tasks'] if t['name'] == 'policy')
     completion = next(a for a in result['allocations'] if a['completion'])
     owned = Path(completion['script_path']).parent/'owned-jobs.txt'
     assert {'704','705'} <= set(owned.read_text().splitlines())
