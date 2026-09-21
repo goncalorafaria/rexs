@@ -35,6 +35,7 @@ nav:
   - Overview: index.md
   - Getting started: getting-started.md
   - Site configuration: configuration.md
+  - Execution backends: backends.md
   - Translation model: translation.md
   - Operations and dashboard: operations.md
   - Compatibility: compatibility.md

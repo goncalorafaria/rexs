@@ -66,6 +66,7 @@ def test_state_store_migrates_database_without_spec_snapshot(tmp_path: Path) -> 
     with sqlite3.connect(db) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(experiments)")}
     assert "spec_text" in columns
+    assert "backend" in columns
 
 
 def test_sqlite_store_tracks_submission_tasks_and_events(tmp_path: Path) -> None:

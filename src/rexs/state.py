@@ -57,6 +57,7 @@ class ExperimentRecord:
     finished_at: str | None
     runtime_seconds: int | None = None
     estimated_start_at: str | None = None
+    backend: str = "slurm"
 
     allocations: tuple[dict[str, Any], ...] = ()
 
@@ -116,6 +117,7 @@ class StateStore:
         run_root: str,
         warnings: Sequence[str],
         tasks: Sequence[Mapping[str, Any]],
+        backend: str = "slurm",
     ) -> ExperimentRecord:
         experiment_id = uuid4().hex
         now = _now()
@@ -152,6 +154,7 @@ class StateStore:
                         """,
                         (experiment_id, task_name, rank),
                     )
+            connection.execute("UPDATE experiments SET backend=? WHERE id=?", (backend, experiment_id))
             self._event(connection, experiment_id, None, "GENERATED", "experiment compiled")
         return self.get(experiment_id)
 
@@ -260,7 +263,7 @@ class StateStore:
             result_path = None
             allocation, rank = bindings.get((row["name"], row["replica_rank"]), ({}, row["replica_rank"]))
             job_id = allocation.get("job_id", experiment.job_id)
-            if job_id:
+            if job_id and experiment.backend == "slurm":
                 run_dir = Path(allocation.get("run_root", experiment.run_root)) / job_id
                 log_path = str(run_dir / "logs" / f"{row['name']}.{rank}.log")
                 result_path = str(run_dir / "results" / row["name"] / str(rank))
@@ -487,6 +490,8 @@ class StateStore:
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(experiments)")}
+            if "backend" not in columns:
+                connection.execute("ALTER TABLE experiments ADD COLUMN backend TEXT NOT NULL DEFAULT 'slurm'")
             if "estimated_start_at" not in columns:
                 connection.execute("ALTER TABLE experiments ADD COLUMN estimated_start_at TEXT")
             if "runtime_seconds" not in columns:
@@ -539,6 +544,7 @@ def _experiment(row: sqlite3.Row) -> ExperimentRecord:
         finished_at=row["finished_at"],
         runtime_seconds=row["runtime_seconds"],
         estimated_start_at=row["estimated_start_at"],
+        backend=row["backend"],
     )
 
 

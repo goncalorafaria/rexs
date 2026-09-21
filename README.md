@@ -53,6 +53,11 @@ that reached its time limit.
 
 ## How it works
 
+REXS now also supports a profile-selected Beaker backend and a shared
+`rexs/v1` intermediate format. Existing Slurm profiles remain compatible.
+See [execution backends](docs/backends.md) and [portable examples](examples/backends)
+for running the same workload with Slurm or Beaker profiles.
+
 ```mermaid
 flowchart LR
     A[Beaker v2<br>YAML / JSON] --> B[REXS compiler]

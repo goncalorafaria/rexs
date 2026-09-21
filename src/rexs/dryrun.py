@@ -10,6 +10,7 @@ from typing import Any
 
 from rexs.compiler import compile_experiment
 from rexs.config import SlurmProfile, load_experiment
+from rexs.profiles import BeakerProfile
 
 EXPERIMENT_SUFFIXES = {".json", ".yaml", ".yml"}
 
@@ -78,13 +79,27 @@ def dry_run_experiments(
         except Exception as exc:  # noqa: BLE001
             results.append(DryRunResult(path=str(path), passed=False, error=f"{type(exc).__name__}: {exc}"))
             continue
-        if spec.get("version") != "v2" or not isinstance(spec.get("tasks"), list):
+        if spec.get("version") not in ("v2", "rexs/v1") or not isinstance(spec.get("tasks"), list):
             skipped += 1
             continue
         if limit is not None and len(results) >= limit:
             break
         try:
             job_name = str(spec.get("name") or path.stem)
+            if isinstance(profile, BeakerProfile):
+                from rexs.beaker_backend import plan
+                planned = plan(spec, profile, name=job_name, image_map=image_map, dataset_map=dataset_map)
+                text = planned.render()
+                output = None
+                if destination:
+                    target = destination / f"{_safe_filename(job_name)}.beaker.yaml"
+                    target.write_text(text)
+                    target.chmod(0o600)
+                    output = str(target.resolve())
+                results.append(DryRunResult(path=str(path), passed=True, job_name=job_name,
+                    task_replicas=sum(t.get("replicas", 1) for t in planned.spec["tasks"]),
+                    script_sha256=hashlib.sha256(text.encode()).hexdigest(), output=output))
+                continue
             compiled = compile_experiment(
                 spec,
                 profile=profile,

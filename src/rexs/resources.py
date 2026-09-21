@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 
 def resource_summary(experiment):
+    if getattr(experiment, 'backend', 'slurm') == 'beaker':
+        return {'available': False, 'reason': 'Beaker resource totals are not collected yet; see the experiment configuration.'}
     if getattr(experiment, 'allocations', ()):
         parts = [resource_summary(SimpleNamespace(**item)) for item in experiment.allocations]
         if not all(part['available'] for part in parts):

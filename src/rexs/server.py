@@ -25,6 +25,7 @@ import yaml
 
 from rexs.auth import USERNAME, dashboard_password, dashboard_url
 from rexs.controller import Controller
+from rexs.errors import RexsError
 from rexs.links import wandb_links, wandb_offline
 from rexs.metrics import MetricsCollector
 from rexs.resources import resource_summary
@@ -227,6 +228,8 @@ class RexsHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
         except (KeyError, ValueError) as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+        except RexsError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
 
     def do_POST(self) -> None:
         if not self._authenticated():
@@ -257,7 +260,7 @@ class RexsHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
         except KeyError as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        except (OSError, ValueError, subprocess.CalledProcessError, RexsError) as exc:
             detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
             self._json({"error": detail}, status=HTTPStatus.CONFLICT)
 

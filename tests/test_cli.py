@@ -47,7 +47,8 @@ def test_log_paths_groups_filters_and_marks_missing_files(monkeypatch, tmp_path,
     ]
     # Only metadata access is available: no refresh or log-reading operation.
     monkeypatch.setattr(cli, 'Controller', lambda db: SimpleNamespace(
-        store=SimpleNamespace(tasks=lambda identifier: records)))
+        store=SimpleNamespace(tasks=lambda identifier: records,
+                              get=lambda identifier: SimpleNamespace(backend='slurm'))))
     main(['logs', 'run', '--paths'])
     output = capsys.readouterr().out
     assert output.index('inference:') < output.index('trainer:')

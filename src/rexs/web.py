@@ -248,7 +248,7 @@ body:has([data-content="logs"].active) .topbar { height:48px; }
   <aside class="sidebar">
     <div class="brand">
       <img class="brand-mark" src="/assets/rexs-logo.png" width="44" height="44" alt="REXS T-rex badge">
-      <div class="brand-copy"><div class="brand-name">REXS</div><div class="brand-caption">Experiments on Slurm</div></div>
+      <div class="brand-copy"><div class="brand-name">REXS</div><div class="brand-caption">Experiments on Slurm and Beaker</div></div>
     </div>
     <nav aria-label="Main navigation">
       <div class="nav-label">Experiments</div>
@@ -256,7 +256,7 @@ body:has([data-content="logs"].active) .topbar { height:48px; }
       <button class="nav-item active" data-nav-filter="running"><span class="nav-icon">▶</span><span class="nav-text">Running</span><span class="nav-count" id="count-running">0</span></button>
       <button class="nav-item" data-nav-filter="failed"><span class="nav-icon">!</span><span class="nav-text">Failed and canceled</span><span class="nav-count" id="count-failed">0</span></button>
     </nav>
-    <div class="side-note"><strong>Slurm is authoritative</strong>REXS records observed state in SQLite.</div>
+    <div class="side-note"><strong>The execution backend is authoritative</strong>REXS records observed state in SQLite.</div>
   </aside>
   <main class="main">
     <header class="topbar">
@@ -405,7 +405,7 @@ async function cancelExperiment(detail) {
   try {
     const result = await request(`/api/experiments/${encodeURIComponent(item.id)}/cancel`, {method:'POST'});
     if (result.status !== 'CANCELLED') throw new Error('The server did not confirm cancellation.');
-    cancelNotices.set(item.id, {state:'success', message:`Slurm accepted the cancellation request for ${item.name}. Jobs may take a moment to stop.`});
+    cancelNotices.set(item.id, {state:'success', message:`${item.backend === 'beaker' ? 'Beaker' : 'Slurm'} accepted the cancellation request for ${item.name}. Jobs may take a moment to stop.`});
     show({...detail, experiment:result});
   } catch (error) {
     cancelNotices.set(item.id, {state:'error', message:`${error.message} Refresh the experiment status before retrying.`});
@@ -496,10 +496,10 @@ function renderList() {
       <td><button class="button" data-open="${escapeHtml(item.id)}">View</button></td>
     </tr>`).join('') : `<tr><td colspan="7"><div class="empty"><div class="empty-icon">⌕</div><strong>No experiments found</strong><div>Try another status or search term.</div></div></td></tr>`;
   app.innerHTML = `
-    <div class="page-head"><div><h1>Experiments</h1><p class="page-subtitle">History of Beaker experiment configurations executed through Slurm.</p></div></div>
-    <div class="filter-card"><div class="status-filters" aria-label="Experiment status">${chips}</div><input class="search" id="search" type="search" placeholder="Search name, ID, Slurm job, or status" value="${escapeHtml(activeSearch)}" aria-label="Search experiments"></div>
+    <div class="page-head"><div><h1>Experiments</h1><p class="page-subtitle">Experiment history across Slurm and Beaker.</p></div></div>
+    <div class="filter-card"><div class="status-filters" aria-label="Experiment status">${chips}</div><input class="search" id="search" type="search" placeholder="Search name, ID, job, or status" value="${escapeHtml(activeSearch)}" aria-label="Search experiments"></div>
     <div class="table-card"><div class="table-summary"><strong>${rows.length}</strong>&nbsp;of&nbsp;<strong>${experiments.length}</strong>&nbsp;experiments</div>
-      <table aria-label="Experiment history"><thead><tr><th>Status</th><th>Name</th><th>Slurm job</th><th>Replicas</th><th>Resources requested</th><th>Runtime</th><th></th></tr></thead><tbody>${body}</tbody></table>
+      <table aria-label="Experiment history"><thead><tr><th>Status</th><th>Name</th><th>Backend ID</th><th>Replicas</th><th>Resources requested</th><th>Runtime</th><th></th></tr></thead><tbody>${body}</tbody></table>
     </div>`;
   document.querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
     activeFilter = button.dataset.filter;
@@ -537,7 +537,7 @@ function renderAllocations(item) {
 }
 function metadataCards(item, taskCount, wandbLinks = [], wandbOffline = false) {
   const values = [
-    ['REXS ID', item.id], ['Slurm jobs', jobLabel(item)], ['W&B', wandbOffline ? 'Offline · no cloud link' : 'No run link captured'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
+    ['REXS ID', item.id], ['Backend', item.backend || 'slurm'], ['Backend IDs', jobLabel(item)], ['W&B', wandbOffline ? 'Offline · no cloud link' : 'No run link captured'], ['Task replicas', taskCount], ['SUBMITTED','PENDING'].includes(item.status) ? ['Estimated start · may change', formatStartEstimate(item)] : ['Runtime', formatRuntime(item)],
   ];
   return values.map(([label,value]) => `<div class="meta-card"><div class="meta-label">${escapeHtml(label)}</div><div class="meta-value ${label.includes('ID') || label.includes('job') ? 'mono' : ''}" title="${escapeHtml(value)}">${label === 'W&B' && wandbLinks.length ? wandbLinks.map((url, index) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open run${wandbLinks.length > 1 ? ` ${index + 1}` : ''} ↗</a>`).join(' · ') : escapeHtml(value)}</div></div>`).join('');
 }
@@ -702,7 +702,7 @@ function renderDetail(detail) {
     try { await request('/api/refresh', {method:'POST'}); if (version === routeVersion) await loadDetail(item.id, {quiet:true}); } catch (error) { if (version === routeVersion) setError(error.message); }
   };
   document.getElementById('cancel-button').onclick = async () => {
-    if (!canCancel || !confirm(`Cancel ${item.name} and all its Slurm jobs?`)) return;
+    if (!canCancel || !confirm(`Cancel ${item.name} and all its jobs?`)) return;
     await cancelExperiment(detail);
   };
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { activeTab = button.dataset.tab; renderDetail(detail); });

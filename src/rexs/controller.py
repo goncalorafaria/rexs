@@ -62,6 +62,18 @@ class Controller:
         experiments = [self.store.get(identifier)] if identifier else self.store.active()
         updates: list[RefreshResult] = []
         for experiment in experiments:
+            if experiment.backend == "beaker":
+                if experiment.job_id and experiment.status not in TERMINAL_STATES:
+                    from rexs.beaker_backend import status as beaker_status
+                    try:
+                        status = beaker_status(experiment.job_id)
+                        self.store.update_status(experiment.id, status, detail="Beaker workload status")
+                        updates.append(RefreshResult(experiment.id, experiment.job_id, experiment.status, status))
+                    except Exception:
+                        if identifier:
+                            raise
+                        logger.warning("Could not refresh Beaker experiment %s", experiment.id, exc_info=True)
+                continue
             if experiment.allocations:
                 try:
                     updates.extend(self._refresh_allocations(experiment))
@@ -247,7 +259,7 @@ class Controller:
             )
 
     def refresh_start_estimates(self):
-        records = [item for item in self.store.active() if item.job_id and item.status in {"SUBMITTED", "PENDING"}]
+        records = [item for item in self.store.active() if item.backend == "slurm" and item.job_id and item.status in {"SUBMITTED", "PENDING"}]
         for start in range(0, len(records), 500):
             batch = records[start : start + 500]
             ids = {item.job_id: item.id for item in batch}
@@ -276,7 +288,7 @@ class Controller:
         records = [
             item
             for item in self.store.list(limit=10000)
-            if item.job_id and (item.status not in TERMINAL_STATES or item.runtime_seconds is None)
+            if item.backend == "slurm" and item.job_id and (item.status not in TERMINAL_STATES or item.runtime_seconds is None)
         ]
         for start in range(0, len(records), 500):
             batch = records[start : start + 500]
@@ -306,6 +318,14 @@ class Controller:
 
     def cancel(self, identifier: str, *, source: str = "local controller/CLI") -> ExperimentRecord:
         experiment = self.store.get(identifier)
+        if experiment.backend == "beaker":
+            if experiment.status in TERMINAL_STATES:
+                return experiment
+            if not experiment.job_id:
+                raise ValueError("Beaker submission has no recorded ID; inspect remote state before cancellation")
+            from rexs.beaker_backend import cancel
+            cancel(experiment.job_id)
+            return self.store.update_status(experiment.id, "CANCELLED", detail=f"Beaker cancellation; source={source}")
         if experiment.allocations:
             with self._experiment_lock(experiment.id):
                 experiment = self.store.get(experiment.id)
@@ -336,6 +356,10 @@ class Controller:
     ) -> list[dict[str, object]]:
         if lines < 1:
             raise ValueError("lines must be positive")
+        experiment = self.store.get(identifier)
+        if experiment.backend == "beaker":
+            from rexs.beaker_backend import logs
+            return logs(experiment, task=task, replica=replica, lines=lines) if experiment.job_id else []
         records = self.store.tasks(identifier)
         selected = [
             record

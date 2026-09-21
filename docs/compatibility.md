@@ -1,5 +1,10 @@
 # Beaker compatibility
 
+This page describes translation to the **Slurm backend**. The
+[Beaker execution backend](backends.md) submits native Beaker experiments and
+preserves their supported native fields, including workspace selection, budget,
+retry, context, and constraints.
+
 REXS implements the experiment features used by datadev and LiteRegistry. It
 does not aim for full Beaker API or scheduler compatibility.
 
@@ -59,4 +64,3 @@ A successful offline dry run proves parsing, translation, and shell syntax. It
 cannot prove that a particular cluster has the mapped images, mounts, GPU
 shape, network behavior, user namespaces, or resource capacity. Validate those
 properties with a small real Slurm submission before scaling a deployment.
-
