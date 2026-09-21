@@ -1,0 +1,11 @@
+backend: slurm
+slurm:
+  account: research
+  partition: cpu
+  time_limit: "00:10:00"
+  run_root: /shared/rexs/runs
+runtime:
+  kind: apptainer
+  image_cache: /shared/rexs/images
+images:
+  runtime: docker://python:3.12-slim

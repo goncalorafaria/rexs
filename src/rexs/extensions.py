@@ -23,6 +23,8 @@ def extend(identifier, task, replicas=1, *, db=None, strict=False, profile=None,
     controller = Controller(db)
     store = controller.store
     parent = store.get(identifier)
+    if parent.backend != "slurm":
+        raise ConfigurationError("Dynamic replica extension is currently supported only on Slurm")
     with controller._experiment_lock(parent.id):
         parent = store.get(parent.id)
         if not parent.allocations or parent.status in TERMINAL_STATES | {'GENERATED'}:

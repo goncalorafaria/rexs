@@ -93,6 +93,12 @@ def compile_experiment(
     """Compile the supported datadev/LiteRegistry Beaker v2 subset to one sbatch script."""
 
     profile = profile or SlurmProfile()
+    from rexs.errors import ConfigurationError
+    from rexs.ir import Experiment
+    try:
+        spec = Experiment.from_dict(dict(spec)).for_slurm()
+    except ConfigurationError as exc:
+        raise TranslationError(str(exc)) from exc
     warnings: list[str] = []
     if spec.get("version") != "v2":
         raise TranslationError("only Beaker experiment version 'v2' is supported")

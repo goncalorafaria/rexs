@@ -1,0 +1,8 @@
+version: rexs/v1
+description: One workload, two execution profiles
+tasks:
+  - name: hello
+    image: runtime
+    command: [python, -c, "print('hello from REXS')"]
+    resources: {cpuCount: 1, memory: 1GiB}
+    result: {path: /output}

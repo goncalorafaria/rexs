@@ -18,12 +18,18 @@ from rexs.config import SlurmProfile, load_experiment, load_mapping_file, load_p
 from rexs.controller import Controller
 from rexs.dryrun import dry_run_experiments
 from rexs.errors import RexsError
+from rexs.profiles import BeakerProfile, load_execution_profile
 from rexs.server import serve, start_daemon, stop_daemon
 from rexs.state import StateStore
 
 
 class Rexs:
     """Reproducible Experiments, eXecuted on Slurm."""
+
+    def normalize(self, experiment: str, define: Any = None) -> dict:
+        """Return the backend-independent REXS intermediate format."""
+        from rexs.ir import Experiment
+        return Experiment.from_dict(load_experiment(experiment, _definitions(define))).to_dict()
 
     def validate(
         self,
@@ -38,6 +44,11 @@ class Rexs:
         """Validate and summarize a Beaker v2 experiment without writing or submitting."""
 
         spec = load_experiment(experiment, substitutions=_definitions(define))
+        planned = _beaker_plan(spec, experiment, profile, name, image_map, dataset_map)
+        if planned is not None:
+            return {"valid": True, "backend": "beaker", "job": planned.name,
+                    "workspace": planned.workspace, "warnings": [],
+                    "task_replicas": sum(t.get("replicas", 1) for t in planned.spec["tasks"])}
         if 'rexs' in spec:
             from rexs.allocations import compile_plan
             planned = compile_plan(spec,experiment,default_profile=profile,name=name or Path(experiment).stem,strict=strict,
@@ -72,7 +83,7 @@ class Rexs:
 
         report = dry_run_experiments(
             _string_list(experiments),
-            profile=load_profile(profile),
+            profile=load_execution_profile(profile),
             image_map=load_mapping_file(image_map, "image map"),
             dataset_map=load_mapping_file(dataset_map, "dataset map"),
             substitutions=_definitions(define),
@@ -102,9 +113,18 @@ class Rexs:
         name: str | None = None,
         strict: bool = False,
     ) -> str:
-        """Render an sbatch script to stdout or --output."""
+        """Render an sbatch script or native Beaker YAML to stdout or --output."""
 
         spec = load_experiment(experiment, substitutions=_definitions(define))
+        planned = _beaker_plan(spec, experiment, profile, name, image_map, dataset_map)
+        if planned is not None:
+            if output is None:
+                return planned.render()
+            target = Path(output).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(planned.render())
+            target.chmod(0o600)
+            return str(target)
         if 'rexs' in spec:
             from rexs.allocations import compile_plan
             planned = compile_plan(spec,experiment,default_profile=profile,name=name or Path(experiment).stem,strict=strict,
@@ -138,9 +158,15 @@ class Rexs:
         sbatch_args: Any = None,
         db: str | None = None,
     ) -> dict[str, Any]:
-        """Compile, persist, submit with sbatch, and register the experiment in SQLite."""
+        """Plan, persist, and submit through the profile's execution backend."""
 
         source_spec = load_experiment(experiment, substitutions=_definitions(define))
+        planned = _beaker_plan(source_spec, experiment, profile, name, image_map, dataset_map)
+        if planned is not None:
+            if sbatch_args:
+                raise RexsError("sbatch_args are only supported by the Slurm backend")
+            from rexs.beaker_backend import submit
+            return submit(planned, experiment, db=db, output=output)
         if 'rexs' in source_spec:
             from rexs.allocations import submit
             return submit(source_spec, experiment, name=name or Path(experiment).stem,
@@ -256,7 +282,7 @@ class Rexs:
         return self.show(identifier, refresh=refresh, db=db)["experiment"]
 
     def refresh(self, identifier: str | None = None, db: str | None = None) -> list[dict[str, Any]]:
-        """Refresh tracked state from squeue and sacct."""
+        """Refresh tracked state from each experiment's execution backend."""
 
         return [asdict(item) for item in Controller(db).refresh(identifier)]
 
@@ -277,6 +303,8 @@ class Rexs:
                 raise ValueError("--paths and --follow cannot be combined")
             return self.log_paths(identifier, task=task, replica=replica, db=db)
         controller = Controller(db)
+        if controller.store.get(identifier).backend == "beaker" and follow:
+            raise RexsError("Beaker log following is not supported yet; use rexs logs for a snapshot")
         records = controller.logs(identifier, task=task, replica=replica, lines=lines)
         if not follow:
             return records
@@ -294,6 +322,8 @@ class Rexs:
         db: str | None = None,
     ) -> str:
         """List current-attempt log paths by task/replica, without reading logs or refreshing jobs."""
+        if Controller(db).store.get(identifier).backend == "beaker":
+            raise RexsError("Beaker stores logs remotely; use rexs logs without --paths")
         records = [
             record for record in Controller(db).store.tasks(identifier)
             if (task is None or record.name == task)
@@ -314,7 +344,7 @@ class Rexs:
         return "\n".join(output)
 
     def cancel(self, identifier: str, db: str | None = None) -> dict[str, Any]:
-        """Cancel a tracked Slurm experiment and record the transition."""
+        """Cancel a tracked experiment through its backend and record the transition."""
 
         return Controller(db).cancel(identifier).as_dict()
 
@@ -346,6 +376,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     except (RexsError, KeyError, ValueError, OSError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def _beaker_plan(spec, source, profile, name, image_map, dataset_map):
+    # Grouped Slurm specs historically resolve the default profile beside the spec.
+    profile_path = Path(source).parent / profile if profile and 'rexs' in spec else profile
+    selected = load_execution_profile(profile_path)
+    if not isinstance(selected, BeakerProfile):
+        return None
+    from rexs.beaker_backend import plan
+    return plan(spec, selected, name=name or spec.get("name") or Path(source).stem,
+                image_map=load_mapping_file(image_map, "image map"),
+                dataset_map=load_mapping_file(dataset_map, "dataset map"))
 
 
 def _compile_inputs(

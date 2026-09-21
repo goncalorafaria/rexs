@@ -101,10 +101,11 @@ class SlurmProfile:
 
 
 def load_profile(path: str | Path | None) -> SlurmProfile:
-    if path is None:
-        return SlurmProfile()
-    value = _load_yaml_mapping(Path(path), "profile")
-    return SlurmProfile.from_mapping(value)
+    from rexs.profiles import load_execution_profile
+    profile = load_execution_profile(path)
+    if not isinstance(profile, SlurmProfile):
+        raise ConfigurationError("This operation requires a Slurm profile")
+    return profile
 
 
 def load_mapping_file(path: str | Path | None, label: str) -> dict[str, str]:
